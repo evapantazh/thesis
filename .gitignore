@@ -1,6 +1,7 @@
 # Φάκελοι με δεδομένα και αποτελέσματα
 data/
 outputs/
+recordings/
 
 # Το περιβάλλον της Python (ΠΟΛΥ ΣΗΜΑΝΤΙΚΟ)
 myenv/
@@ -9,6 +10,8 @@ myenv/
 *.jpg
 *.jpeg
 *.png
+*.npy
+*.csv
 
 # Προσωρινά αρχεία Python
 __pycache__/

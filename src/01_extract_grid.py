@@ -5,10 +5,7 @@ import pandas as pd
 import os
 import glob
 from pathlib import Path
-# =========================
-# CONFIG
-# =========================
-
+'''
 # ─────────────────────────────────────────────────────────────
 #  PATHS
 # ─────────────────────────────────────────────────────────────
@@ -18,14 +15,18 @@ DIST     = "500"
 CLOTH    = "Tshirt"
 REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
 
-
 DEPTH_DIR = BASE / f"Camera_{REC_ID}" / "depth"
 COLOR_DIR = BASE / f"Camera_{REC_ID}" / "color"
 OUTPUT_CSV = BASE / f"GRID_{REC_ID}.csv"
 
+'''
+DEPTH_DIR = Path(r"C:\Projects\thesis\recordings\depth2")
+COLOR_DIR = Path(r"C:\Projects\thesis\recordings\color2")
+OUTPUT_CSV = Path(r"C:\Projects\thesis\recordings\grid2_test.csv")
+
 ROWS, COLS = 7, 4
 
-# Chest ROI shrink factors (your chosen values)
+# Chest ROI shrink factors 
 SHRINK_X = 0.08
 SHRINK_Y_TOP = 0.05
 SHRINK_Y_BOTTOM = 0.30

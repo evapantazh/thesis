@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 
 # Use the full paths to avoid the FileNotFoundError
-path_orig = r"C:\Projects\thesis\data\csv\Sub01_Matrix_D_Filtered.csv"
+path_orig = r"C:\Projects\thesis\data\FILTERED_Sub01_500_Tshirt.csv"
 path_clean = r"C:\Projects\thesis\Sub01_Matrix_X_LowRank.csv"
 
 try:

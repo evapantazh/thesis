@@ -5,7 +5,7 @@ from scipy.fft import fft, fftfreq
 from scipy.signal import find_peaks
 
 # 1. Load the CLEAN Low-Rank matrix
-path_clean = r"C:\Projects\thesis\data\Sub01_Matrix_X_LowRank.csv"
+path_clean = r"C:\Projects\thesis\Sub01_Matrix_X_LowRank.csv"
 df = pd.read_csv(path_clean)
 frames = df['frame'].values
 X = df.drop(columns=['frame']).values

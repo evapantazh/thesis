@@ -63,7 +63,7 @@ def fit_ialm(D, lambda_=None, tol=1e-7, mu=None, rho=1.5, max_iter=1000, verbose
     return A, E
 
 # --- DATA LOADING ---
-file_path = r"C:\Projects\thesis\data\csv\Sub01_Matrix_D_Filtered.csv"
+file_path = r"C:\Projects\thesis\data\FILTERED_Sub01_500_Tshirt.csv"
 if not os.path.exists(file_path):
     print(f"Error: {file_path} not found!")
 else:

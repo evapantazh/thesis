@@ -5,8 +5,8 @@ from scipy.signal import butter, filtfilt
 
 # --- 1. SETTINGS & PATHS ---
 # Update this to your exact path
-INPUT_PATH = r"C:\Projects\thesis\data\csv\chrys_500_tshirt_GRID.csv"
-OUTPUT_PATH = r"C:\Projects\thesis\data\csv\chrys_500_tshirt_grid_FILTERED.csv"
+INPUT_PATH = r"C:\Projects\thesis\data\GRID_Sub01_500_Tshirt.csv"
+OUTPUT_PATH = r"C:\Projects\thesis\data\FILTERED_Sub01_500_Tshirt.csv"
 
 FS = 30.0        # Sampling Rate
 LOWCUT = 0.5     # 30 BPM

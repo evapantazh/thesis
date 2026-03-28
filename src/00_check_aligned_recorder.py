@@ -3,7 +3,6 @@ import numpy as np
 import os
 from pathlib import Path
 
-# --- CONFIG (Verify these match your recorder!) ---
 DATA_DIR = Path(r"C:\Projects\thesis\data\chrys_1500_hoodie")
 COLOR_DIR = DATA_DIR / "color"
 DEPTH_DIR = DATA_DIR / "depth"
@@ -12,7 +11,7 @@ def verify_alignment():
     # 1. Check if directories exist
     if not COLOR_DIR.exists() or not DEPTH_DIR.exists():
         print(f"Error: Directories not found!\nChecked: {COLOR_DIR}")
-        return
+        return 
 
     # 2. Get files and sort them
     color_files = sorted(list(COLOR_DIR.glob("*.jpg")))
@@ -57,7 +56,7 @@ def verify_alignment():
         
         # WAIT 100ms per frame so you can actually see it
         # Press 'q' to stop the video
-        if cv2.waitKey(1) in  [ord('q'), 27]  :#& 0xFF == ord('q'):
+        if cv2.waitKey(1) in  [ord('q'), 27]  :  #& 0xFF == ord('q'):
             break
 
     cv2.destroyAllWindows()

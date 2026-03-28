@@ -13,7 +13,7 @@ def butter_bandpass_filter(data, lowcut, highcut, fs, order=4):
     return y
 
 # --- 2. LOAD DATA ---
-file_path = r"C:\Projects\thesis\data\csv\chrys_500_tshirt_grid_FILTERED.csv"
+file_path = r"C:\Projects\thesis\data\FILTERED_Sub01_500_Tshirt.csv"
 OUPUT_DIR_FIGURE = r"C:\Projects\thesis\data\figures\chrys_500_tshirt_plot_FILTER"
 
 df = pd.read_csv(file_path)
