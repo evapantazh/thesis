@@ -5,24 +5,19 @@ import pandas as pd
 import os
 import glob
 from pathlib import Path
-'''
+
 # ─────────────────────────────────────────────────────────────
 #  PATHS
 # ─────────────────────────────────────────────────────────────
 BASE     = Path(r"C:\Projects\thesis\data")
-SUBJECT  = "Sub01"
-DIST     = "500"
-CLOTH    = "Tshirt"
+SUBJECT  = "Sub03"
+DIST     = "800"                             # 800, 1200, 1800
+CLOTH    = "Tshirt"                          # Tshirt, Hoodie
 REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
 
 DEPTH_DIR = BASE / f"Camera_{REC_ID}" / "depth"
 COLOR_DIR = BASE / f"Camera_{REC_ID}" / "color"
-OUTPUT_CSV = BASE / f"GRID_{REC_ID}.csv"
-
-'''
-DEPTH_DIR = Path(r"C:\Projects\thesis\recordings\depth2")
-COLOR_DIR = Path(r"C:\Projects\thesis\recordings\color2")
-OUTPUT_CSV = Path(r"C:\Projects\thesis\recordings\grid2_test.csv")
+OUTPUT_CSV = BASE / "GRID_files" / f"GRID_{REC_ID}.csv"
 
 ROWS, COLS = 7, 4
 
@@ -35,6 +30,9 @@ SHRINK_Y_BOTTOM = 0.30
 MIN_ROI_W = 40   # pixels
 MIN_ROI_H = 40   # pixels
 MIN_VALID_PIXELS_PER_CELL = 10  # if less, treat as 0
+
+DEBUG_VIZ = True
+
 
 # Instead of hardcoding START/END frames, it's safer to look at what's actually in the folder
 color_files = sorted(glob.glob(os.path.join(COLOR_DIR, "frame_*.jpg")))
@@ -174,28 +172,29 @@ for i in frame_indices:
             frame_data[f"cell_{cell_idx}"] = safe_mean_depth(cell)
             cell_idx += 1
 
-    # --- DEBUG VISUALIZATION ---
-    # Φτιάχνουμε ένα αντίγραφο της εικόνας για να μην χαλάσουμε την πρωτότυπη
-    debug_img = img.copy()
+    if DEBUG_VIZ:
 
-    # 1. Σχεδίασε το κεντρικό ROI (Στήθος)
-    cv2.rectangle(debug_img, (d_x1, d_y1), (d_x2, d_y2), (0, 255, 0), 2)
+        # --- DEBUG VISUALIZATION ---
+        # Φτιάχνουμε ένα αντίγραφο της εικόνας για να μην χαλάσουμε την πρωτότυπη
+        debug_img = img.copy()
 
-    # 2. Σχεδίασε το πλέγμα 7x4
-    for r in range(ROWS + 1):
-        y = d_y1 + r * cell_h
-        cv2.line(debug_img, (d_x1, y), (d_x2, y), (255, 0, 0), 1)
-    for c in range(COLS + 1):
-        x = d_x1 + c * cell_w
-        cv2.line(debug_img, (x, d_y1), (x, d_y2), (255, 0, 0), 1)
+        # 1. Σχεδίασε το κεντρικό ROI (Στήθος)
+        cv2.rectangle(debug_img, (d_x1, d_y1), (d_x2, d_y2), (0, 255, 0), 2)
 
-    # 3. Εμφάνισε την εικόνα
-    cv2.imshow("Verifying Chest Grid", debug_img)
-    
-    # Πάτα 'q' για να κλείσει το παράθυρο ή οποιοδήποτε πλήκτρο για το επόμενο frame
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        # 2. Σχεδίασε το πλέγμα 7x4
+        for r in range(ROWS + 1):
+            y = d_y1 + r * cell_h
+            cv2.line(debug_img, (d_x1, y), (d_x2, y), (255, 0, 0), 1)
+        for c in range(COLS + 1):
+            x = d_x1 + c * cell_w
+            cv2.line(debug_img, (x, d_y1), (x, d_y2), (255, 0, 0), 1)
 
+        # 3. Εμφάνισε την εικόνα
+        cv2.imshow("Verifying Chest Grid", debug_img)
+        
+        # Πάτα 'q' για να κλείσει το παράθυρο ή οποιοδήποτε πλήκτρο για το επόμενο frame
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
 
     data_list.append(frame_data)
@@ -227,3 +226,6 @@ print(f"ROI invalid:           {n_roi_invalid}")
 print(f"ROI too small:         {n_roi_too_small}")
 print(f"Cell size zero:        {n_cell_zero}")
 print("---------------------------")
+
+cv2.destroyAllWindows()
+pose.close()

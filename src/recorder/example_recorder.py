@@ -96,7 +96,7 @@ def main():
         profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
         try:
             # We search the list for exactly what we need
-            color_profile = profile_list.get_video_stream_profile(1280, 0, OBFormat.RGB, 30)
+            color_profile = profile_list.get_video_stream_profile(1280, 0, OBFormat.RGB, 15)
         except Exception:
             # Fallback if the specific resolution isn't found
             color_profile = profile_list.get_default_video_stream_profile()
@@ -108,7 +108,7 @@ def main():
         profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
         try:
             # Depth resolution is usually different from Color (Femto Bolt is 640x576)
-            depth_profile = profile_list.get_video_stream_profile(640, 0, OBFormat.Y16, 30)
+            depth_profile = profile_list.get_video_stream_profile(640, 0, OBFormat.Y16, 15) # changed it from 30fps->15 since it does it anyway because of the alignment
         except Exception:
             depth_profile = profile_list.get_default_video_stream_profile()
 

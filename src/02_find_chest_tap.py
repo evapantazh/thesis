@@ -28,16 +28,16 @@ PLOT_SYNC = True
 #  PATHS
 # ─────────────────────────────────────────────────────────────
 BASE     = Path(r"C:\Projects\thesis\data")
-SUBJECT  = "Sub01"
-DIST     = "500"
+SUBJECT  = "Sub03"
+DIST     = "800"
 CLOTH    = "Tshirt"
 REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
 
-PATH_CAMERA_GRID = BASE / f"GRID_{REC_ID}.CSV"
+PATH_CAMERA_GRID = BASE / "GRID_files"/ f"GRID_{REC_ID}.CSV"
 PATH_MOVESENSE   = BASE / f"Movesense_{REC_ID}"
-PATH_TAP_JSON    = BASE / "tap_info" / f"Tap_info_{REC_ID}.json"
 PATH_MOVESENSE_ACC = PATH_MOVESENSE / f"{REC_ID}_acc_stream.json"
 PATH_MOVESENSE_ECG = PATH_MOVESENSE / f"{REC_ID}_ecg_stream.json"
+PATH_OUTPUT_TAP_JSON = BASE / "tap_info" / f"Tap_info_{REC_ID}.json"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -59,8 +59,12 @@ PROMINENCE_SIGMA   = 2.0
 MIN_DISTANCE_SEC   = 0.25
 
 FS_MS_ACC = 52.0  # The new sample rate from Movesense Showcase
-FS_CAM = 30.0   # camera nominal fps
 
+#FS_CAM = 30.0   # camera nominal fps
+# Instead of a fixed FPS for the cqmera, compute it through timestamps
+ts_df = pd.read_csv(BASE / f"Camera_{REC_ID}" / "timestamps.csv")
+t_cam = (ts_df["timestamp"].values - ts_df["timestamp"].values[0]) / 1000.0
+frames = ts_df["frame"].values.astype(int)
 
 # ─────────────────────────────────────────────────────────────
 #  HELPERS
@@ -235,7 +239,7 @@ print("\n[1] Camera grid...")
 df_cam = pd.read_csv(PATH_CAMERA_GRID)
 frames = df_cam["frame"].values.astype(int)
 X      = df_cam.drop(columns=["frame"]).values.astype(float)
-t_cam  = (frames - frames[0]) / FS_CAM
+#t_cam  = (frames - frames[0]) / FS_CAM
 print(f"    {X.shape[0]} frames x {X.shape[1]} cells  |  {t_cam[-1]:.2f}s  at {FS_CAM}Hz")
 
 cam_proxy = build_camera_proxy(X)
