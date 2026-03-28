@@ -65,7 +65,9 @@ FS_MS_ACC = 52.0  # The new sample rate from Movesense Showcase
 ts_df = pd.read_csv(BASE / f"Camera_{REC_ID}" / "timestamps.csv")
 t_cam = (ts_df["timestamp"].values - ts_df["timestamp"].values[0]) / 1000.0
 frames = ts_df["frame"].values.astype(int)
-
+intervals = np.diff(t_cam)
+FS_CAM = float(1.0 / np.median(intervals[intervals > 0])) # actual fps from timestamps
+print(f"Actual camera FPS: {FS_CAM:.2f}")
 # ─────────────────────────────────────────────────────────────
 #  HELPERS
 # ─────────────────────────────────────────────────────────────
@@ -237,10 +239,10 @@ print("=" * 60)
 # 1. Camera
 print("\n[1] Camera grid...")
 df_cam = pd.read_csv(PATH_CAMERA_GRID)
-frames = df_cam["frame"].values.astype(int)
+grid_frames = df_cam["frame"].values.astype(int)
 X      = df_cam.drop(columns=["frame"]).values.astype(float)
 #t_cam  = (frames - frames[0]) / FS_CAM
-print(f"    {X.shape[0]} frames x {X.shape[1]} cells  |  {t_cam[-1]:.2f}s  at {FS_CAM}Hz")
+print(f"    {X.shape[0]} grid_frames x {X.shape[1]} cells  |  {t_cam[-1]:.2f}s  at {FS_CAM}Hz")
 
 cam_proxy = build_camera_proxy(X)
 
@@ -249,7 +251,7 @@ mask_dbg = t_cam <= SEARCH_WINDOW_SEC
 top5_idx = np.argsort(cam_proxy[mask_dbg])[-5:][::-1]
 print("  Top 5 proxy values in search window:")
 for i in top5_idx:
-    print(f"    frame={frames[i]:4d}  t={t_cam[i]:.3f}s  proxy={cam_proxy[i]:.1f}")
+    print(f"    frame={grid_frames[i]:4d}  t={t_cam[i]:.3f}s  proxy={cam_proxy[i]:.1f}")
 cam_idx, cam_times, cam_proxy_s, cam_dbg = find_tap_peaks(
     cam_proxy, t_cam, FS_CAM,
     SEARCH_WINDOW_SEC, TAP_SMOOTH_MS_CAM, PROMINENCE_SIGMA, MIN_DISTANCE_SEC
@@ -257,7 +259,7 @@ cam_idx, cam_times, cam_proxy_s, cam_dbg = find_tap_peaks(
 
 print(f"    Peaks found: {cam_dbg['num_peaks_found']}")
 for i, (gi, tp) in enumerate(zip(cam_idx, cam_times)):
-    print(f"      peak {i+1}: t={tp:.3f}s  frame={frames[gi]}  "
+    print(f"      peak {i+1}: t={tp:.3f}s  frame={grid_frames[gi]}  "
           f"proxy={cam_proxy[gi]:.1f}")
 
 # 2. Movesense
@@ -288,14 +290,19 @@ ms_tap_gi,  ms_tap  = select_tap(ms_idx,  ms_times,  label="movesense")
 
 dt = ms_tap - cam_tap
 
+if abs(dt) > 10.0:
+    print("WARNING: dt suspiciously large — likely wrong peak pair")
+if abs(dt) < 0.05:
+    print("WARNING: dt suspiciously small — may be noise")
+
 print(f"\n{'─'*50}")
-print(f"  Camera tap   : {cam_tap:.4f}s  (frame {frames[cam_tap_gi]})")
+print(f"  Camera tap   : {cam_tap:.4f}s  (frame {grid_frames[cam_tap_gi]})")
 print(f"  Movesense tap: {ms_tap:.4f}s")
 print(f"  Offset dt    : {dt:+.4f}s")
 print(f"  Meaning      : t_camera + ({dt:+.4f}s) = t_movesense")
 print(f"{'─'*50}")
 
-save_tap_info(PATH_TAP_JSON, cam_tap, ms_tap, dt, cam_dbg, ms_dbg, ms_start_ts)
+save_tap_info(PATH_OUTPUT_TAP_JSON, cam_tap, ms_tap, dt, cam_dbg, ms_dbg, ms_start_ts)
 
 # 4. Plots
 if not PLOT_SYNC:
@@ -327,7 +334,7 @@ for tp in cam_times:
 for tp in ms_times:
     ax.axvline(tp, color="darkorange", linestyle=":", alpha=0.5)
 ax.axvline(cam_tap, color="steelblue",  linestyle="--", lw=2,
-           label=f"Cam tap: {cam_tap:.3f}s (fr{frames[cam_tap_gi]})")
+           label=f"Cam tap: {cam_tap:.3f}s (fr{grid_frames[cam_tap_gi]})")
 ax.axvline(ms_tap,  color="darkorange", linestyle="--", lw=2,
            label=f"MS tap:  {ms_tap:.3f}s")
 ax.set_xlabel("Time (s) — own clock")
@@ -368,6 +375,6 @@ ax.set_xlabel("Time (s) — Movesense clock")
 ax.set_ylabel("Normalized amplitude")
 ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-out = PATH_TAP_JSON.parent / f"{REC_ID}_tap_sync.png"
+out = PATH_OUTPUT_TAP_JSON.parent / f"{REC_ID}_tap_sync.png"
 plt.savefig(out, dpi=150)
 plt.show()
