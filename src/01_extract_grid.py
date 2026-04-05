@@ -7,19 +7,31 @@ import glob
 from pathlib import Path
 from collections import deque
 import json  # use for metadata file
+import sys
 
 # ─────────────────────────────────────────────────────────────
 #  PATHS
 # ─────────────────────────────────────────────────────────────
-BASE     = Path(r"C:\Projects\thesis\data")
-SUBJECT  = "andreas"
-DIST     = "800"                             # 800, 1200, 1800
-CLOTH    = "tshirt"                          # Tshirt, Hoodie
-REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
+if len(sys.argv) > 1:
+    REC_DIR    = Path(sys.argv[1])
+    REC_ID     = REC_DIR.name
+    BASE       = REC_DIR.parent
+    DEPTH_DIR  = REC_DIR / "depth"
+    COLOR_DIR  = REC_DIR / "color"
+    OUTPUT_CSV = Path(r"C:\Projects\thesis\data\GRID_files") / f"GRID_{REC_ID}.csv"
 
-DEPTH_DIR = BASE / f"{REC_ID}" / "depth"
-COLOR_DIR = BASE / f"{REC_ID}" / "color"
-OUTPUT_CSV = BASE / "GRID_files" / f"GRID_{REC_ID}.csv"
+else:
+
+    BASE     = Path(r"C:\Projects\thesis\data")
+    SUBJECT  = "andreas"
+    DIST     = "1800"                             # 800, 1200, 1800
+    CLOTH    = "hoodie"                           # Tshirt, Hoodie
+    REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
+    REC_DIR   = BASE / REC_ID
+
+    DEPTH_DIR = BASE / f"{REC_ID}" / "depth"
+    COLOR_DIR = BASE / f"{REC_ID}" / "color"
+    OUTPUT_CSV = BASE / "GRID_files" / f"GRID_{REC_ID}.csv"
 
 ROWS, COLS = 7, 4
 
@@ -33,12 +45,12 @@ MIN_ROI_W = 40   # pixels
 MIN_ROI_H = 40   # pixels
 MIN_VALID_PIXELS_PER_CELL = 10  # if less, treat as 0
 
-DEBUG_VIZ = True
+DEBUG_VIZ = False # True to show the visual overlay
 
 
 # Load depth scale from metadata if available 
 # FOR OLD RECORDINGS CANNOT BE USED 
-METADATA_PATH = BASE / REC_ID / "metadata.json"
+METADATA_PATH = REC_DIR / "metadata.json"
 if METADATA_PATH.exists():
     with open(METADATA_PATH) as f:
         meta = json.load(f)
