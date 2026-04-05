@@ -5,18 +5,20 @@ import pandas as pd
 import os
 import glob
 from pathlib import Path
+from collections import deque
+import json  # use for metadata file
 
 # ─────────────────────────────────────────────────────────────
 #  PATHS
 # ─────────────────────────────────────────────────────────────
 BASE     = Path(r"C:\Projects\thesis\data")
-SUBJECT  = "Sub03"
+SUBJECT  = "andreas"
 DIST     = "800"                             # 800, 1200, 1800
-CLOTH    = "Tshirt"                          # Tshirt, Hoodie
+CLOTH    = "tshirt"                          # Tshirt, Hoodie
 REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
 
-DEPTH_DIR = BASE / f"Camera_{REC_ID}" / "depth"
-COLOR_DIR = BASE / f"Camera_{REC_ID}" / "color"
+DEPTH_DIR = BASE / f"{REC_ID}" / "depth"
+COLOR_DIR = BASE / f"{REC_ID}" / "color"
 OUTPUT_CSV = BASE / "GRID_files" / f"GRID_{REC_ID}.csv"
 
 ROWS, COLS = 7, 4
@@ -32,6 +34,20 @@ MIN_ROI_H = 40   # pixels
 MIN_VALID_PIXELS_PER_CELL = 10  # if less, treat as 0
 
 DEBUG_VIZ = True
+
+
+# Load depth scale from metadata if available 
+# FOR OLD RECORDINGS CANNOT BE USED 
+METADATA_PATH = BASE / REC_ID / "metadata.json"
+if METADATA_PATH.exists():
+    with open(METADATA_PATH) as f:
+        meta = json.load(f)
+    DEPTH_SCALE = meta.get("depth_scale", 1.0)
+    print(f"Depth scale loaded from metadata: {DEPTH_SCALE}")
+else:
+    # Set explicitely for old recs
+    DEPTH_SCALE = 1.0
+    print("[i] No metadata.json found- probably old recording, using depth_scale=1.0")
 
 
 # Instead of hardcoding START/END frames, it's safer to look at what's actually in the folder
@@ -85,6 +101,11 @@ n_ok = 0
 
 print("🚀 Starting Grid Extraction (7x4)...")
 
+# Smoothing buffer for ROI coordinates
+SMOOTH_N = 10  # number of frames to average over
+roi_buffer = deque(maxlen=SMOOTH_N)
+
+
 for i in frame_indices:
     n_total += 1
 
@@ -99,7 +120,7 @@ for i in frame_indices:
 
     try:
         # Load raw depth and convert to float32 for sub-millimeter precision
-        depth_img = np.load(depth_path).astype(np.float32) 
+        depth_img = np.load(depth_path).astype(np.float32) * DEPTH_SCALE
     except Exception as e:
         print(f"Error loading {depth_path}: {e}")
         continue
@@ -131,11 +152,20 @@ for i in frame_indices:
     norm_chest_y1 = norm_y1 + (norm_torso_h * SHRINK_Y_TOP)
     norm_chest_y2 = norm_y2 - (norm_torso_h * SHRINK_Y_BOTTOM)
 
-    # Convert to depth pixel coords + clamp to image bounds
-    d_x1 = clamp(int(norm_chest_x1 * depth_w), 0, depth_w - 1)
-    d_x2 = clamp(int(norm_chest_x2 * depth_w), 0, depth_w - 1)
-    d_y1 = clamp(int(norm_chest_y1 * depth_h), 0, depth_h - 1)
-    d_y2 = clamp(int(norm_chest_y2 * depth_h), 0, depth_h - 1)
+    # Add current ROI to buffer
+    roi_buffer.append((norm_chest_x1, norm_chest_x2, norm_chest_y1, norm_chest_y2))
+
+    # Average over buffer
+    avg_x1 = sum(r[0] for r in roi_buffer) / len(roi_buffer)
+    avg_x2 = sum(r[1] for r in roi_buffer) / len(roi_buffer)
+    avg_y1 = sum(r[2] for r in roi_buffer) / len(roi_buffer)
+    avg_y2 = sum(r[3] for r in roi_buffer) / len(roi_buffer)
+
+    # Convert smoothed coords to depth pixels
+    d_x1 = clamp(int(avg_x1 * depth_w), 0, depth_w - 1)
+    d_x2 = clamp(int(avg_x2 * depth_w), 0, depth_w - 1)
+    d_y1 = clamp(int(avg_y1 * depth_h), 0, depth_h - 1)
+    d_y2 = clamp(int(avg_y2 * depth_h), 0, depth_h - 1)
 
     # Ensure proper ordering (x1 < x2, y1 < y2)
     if d_x2 <= d_x1 or d_y2 <= d_y1:
@@ -193,7 +223,7 @@ for i in frame_indices:
         cv2.imshow("Verifying Chest Grid", debug_img)
         
         # Πάτα 'q' για να κλείσει το παράθυρο ή οποιοδήποτε πλήκτρο για το επόμενο frame
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(66) & 0xFF == ord('q'):
             DEBUG_VIZ = False          # ← stop showing window
             cv2.destroyAllWindows()    # ← close it
 
