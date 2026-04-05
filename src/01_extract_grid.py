@@ -194,7 +194,8 @@ for i in frame_indices:
         
         # Πάτα 'q' για να κλείσει το παράθυρο ή οποιοδήποτε πλήκτρο για το επόμενο frame
         if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+            DEBUG_VIZ = False          # ← stop showing window
+            cv2.destroyAllWindows()    # ← close it
 
 
     data_list.append(frame_data)

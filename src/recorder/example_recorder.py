@@ -20,10 +20,10 @@ import queue
 import threading
 import shutil # Add this
 import os     # Add this
-import sys
 from pathlib import Path
 from pyorbbecsdk import *
 from utils import frame_to_bgr_image
+import json
 
 
 # --- Configuration Constants ---
@@ -31,9 +31,10 @@ ESC_KEY = 27
 MIN_DEPTH = 20    # Minimum valid depth distance in mm
 MAX_DEPTH = 5000 # Maximum valid depth distance in mm 10meters
 
-OUTPUT_DIR = Path(r"C:\Projects\thesis\data")
+OUTPUT_DIR = Path(r"C:\Pictures")
 DEPTH_DIR = OUTPUT_DIR / "depth"
 COLOR_DIR = OUTPUT_DIR / "color"
+METADATA_DIR = OUTPUT_DIR / "metadata.json"
 
 # Create folders immediately
 DEPTH_DIR.mkdir(parents=True, exist_ok=True)
@@ -97,10 +98,13 @@ def main():
         try:
             # We search the list for exactly what we need
             color_profile = profile_list.get_video_stream_profile(1280, 0, OBFormat.RGB, 15)
+            for i in range(profile_list.get_count()):
+                p = profile_list.get_video_stream_profile(i)
+                print(f"Color profile {i}: {p.get_width()}x{p.get_height()} @ {p.get_fps()}fps")
         except Exception:
             # Fallback if the specific resolution isn't found
             color_profile = profile_list.get_default_video_stream_profile()
-            print("Warning: Requested 1280x720@30fps not found, using default.")
+            print("Warning: Requested 1280x720@15fps not found, using default.")
         
         config.enable_stream(color_profile)
         
@@ -108,15 +112,12 @@ def main():
         profile_list = pipeline.get_stream_profile_list(OBSensorType.DEPTH_SENSOR)
         try:
             # Depth resolution is usually different from Color (Femto Bolt is 640x576)
-            depth_profile = profile_list.get_video_stream_profile(640, 0, OBFormat.Y16, 15) # changed it from 30fps->15 since it does it anyway because of the alignment
+            depth_profile = profile_list.get_video_stream_profile(640, 0, OBFormat.Y16, 15)
         except Exception:
             depth_profile = profile_list.get_default_video_stream_profile()
 
         config.enable_stream(depth_profile)
         
-        
-        # 3. This ensures the hardware fires both sensors at the exact same microsecond
-        pipeline.enable_frame_sync()
         
         #Ensure pipeline waits for a full frameset (Color + Depth) before outputting
         config.set_frame_aggregate_output_mode(OBFrameAggregateOutputMode.FULL_FRAME_REQUIRE)
@@ -124,8 +125,6 @@ def main():
         print(f"Stream configuration error: {e}")
         return
 
-    # Enable hardware-level frame synchronization if requested
-    pipeline.enable_frame_sync()
 
     try:
         pipeline.start(config)
@@ -133,9 +132,33 @@ def main():
         print(f"Pipeline start error: {e}")
         return
 
+    # Enable hardware-level frame synchronization if requested
+    pipeline.enable_frame_sync()
+
     # Initialize the alignment filter. D2C is the most common use case (overlaying depth on RGB).
     align_filter = AlignFilter(align_to_stream=OBStreamType.COLOR_STREAM)
     
+    # Grab one frame just to read actual delivered resolutions
+    test_frames = pipeline.wait_for_frames(1000)
+    test_frames = align_filter.process(test_frames).as_frame_set()
+    test_color = test_frames.get_color_frame()
+    test_depth = test_frames.get_depth_frame()
+
+    metadata = {
+        "depth_scale": test_depth.get_depth_scale(),        
+        "fps": 15,
+        "color_width": test_color.get_width(),
+        "color_height": test_color.get_height(),
+        "depth_width": test_depth.get_width(),
+        "depth_height": test_depth.get_height()
+    }
+
+    with open(METADATA_DIR, "w") as f:
+        json.dump(metadata, f, indent=4)
+
+    print(f"Metadata saved: {metadata}")
+
+
     recording = False
     frame_idx = 0
     ts_rows = []
@@ -168,9 +191,13 @@ def main():
             
             if not color_frame or not depth_frame:
                 continue
+            
 
             # Get timestamps
-            timestamp = depth_frame.get_timestamp()
+            depth_timestamp = depth_frame.get_timestamp()
+            # save color timestamp as well to verify the time alignment is done correctly
+            color_timestamp = color_frame.get_timestamp()
+
 
             # Convert raw color frame to BGR for OpenCV rendering
             color_image = frame_to_bgr_image(color_frame)
@@ -209,11 +236,18 @@ def main():
                 # Put the "order" in the queue and keep going!
                 save_q.put((d_file, depth_data, c_file, color_image))
 
-                ts_rows.append([frame_idx, timestamp, d_file.name, c_file.name])
+                ts_rows.append([frame_idx, depth_timestamp, color_timestamp, d_file.name, c_file.name])
 
                 # Saving logic goes here 
                 cv2.circle(overlay_image, (30, 30), 10, (0, 0, 255), -1)
+
+                if len(ts_rows) > 1:
+                    gap = depth_timestamp - ts_rows[-2][1]
+                    if gap > 100:
+                        print(f"[!] Possible frame drop at frame {frame_idx} | gap: {gap:.1f} ms")
+
                 frame_idx += 1
+    
 
             cv2.imshow(window_name, overlay_image)
 
@@ -224,12 +258,17 @@ def main():
                 if recording and ts_rows:
                     with open(OUTPUT_DIR / "timestamps.csv", "w", newline="") as f:
                         writer = csv.writer(f)
-                        writer.writerow(["frame", "timestamp", "depth_file", "color_file"])
+                        writer.writerow(["frame", "depth_timestamp", "color_timestamp", "depth_file", "color_file"])
                         writer.writerows(ts_rows)
                 break
             elif key == ord(' '):
                 recording = not recording
                 if recording:
+                    # Check if files already exist from a previous recording
+                    existing = list(DEPTH_DIR.glob("*.npy"))
+                    if existing:
+                        print(f"[!] WARNING: {len(existing)} depth files already exist in {DEPTH_DIR}")
+                        print(f"    They will be overwritten if you continue.")
                     print("Started recording...")
                     frame_idx = 0
                     ts_rows = []
@@ -238,7 +277,7 @@ def main():
                     if ts_rows:
                         with open(OUTPUT_DIR / "timestamps.csv", "w", newline="") as f:
                             writer = csv.writer(f)
-                            writer.writerow(["frame", "timestamp", "depth_file", "color_file"])
+                            writer.writerow(["frame", "depth_timestamp", "color_timestamp", "depth_file", "color_file"])
                             writer.writerows(ts_rows)
 
         except KeyboardInterrupt:

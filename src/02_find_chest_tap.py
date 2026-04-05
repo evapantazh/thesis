@@ -62,12 +62,9 @@ FS_MS_ACC = 52.0  # The new sample rate from Movesense Showcase
 
 #FS_CAM = 30.0   # camera nominal fps
 # Instead of a fixed FPS for the cqmera, compute it through timestamps
-ts_df = pd.read_csv(BASE / f"Camera_{REC_ID}" / "timestamps.csv")
-t_cam = (ts_df["timestamp"].values - ts_df["timestamp"].values[0]) / 1000.0
-frames = ts_df["frame"].values.astype(int)
-intervals = np.diff(t_cam)
-FS_CAM = float(1.0 / np.median(intervals[intervals > 0])) # actual fps from timestamps
-print(f"Actual camera FPS: {FS_CAM:.2f}")
+# in the main section
+
+
 # ─────────────────────────────────────────────────────────────
 #  HELPERS
 # ─────────────────────────────────────────────────────────────
@@ -110,8 +107,7 @@ def build_camera_proxy(X):
         bad = (X[:, j] == 0) | ~np.isfinite(X[:, j])
         X[bad, j] = col_med[j]
 
-    X_dt = X.copy()  # no detrend for tap detection — gradient handles drift naturally
-    dX   = np.gradient(X_dt, axis=0)          # T x N_cells, signed
+    dX   = np.diff(X, axis=0, prepend = X[[0]])          # T x N_cells, forward looking
 
     energy    = np.sum(np.abs(dX), axis=1)    # T
     coherence = np.abs(np.mean(dX, axis=1))   # T
@@ -187,9 +183,9 @@ def find_tap_peaks(proxy, t, fs,
     return global_indices, peak_times, proxy_smooth, debug
 
 
-def select_tap(global_indices, peak_times, label="signal"):
+def select_tap(global_indices, peak_times, proxy, label="signal"):
     """
-    Single-tap protocol: pick the FIRST (earliest) peak.
+    Single-tap protocol: pick the FIRST (earliest) peak. # maybe pick the biggest insteaf of first?????
     Within a short search window the tap always comes before
     any subject movement or settling peaks.
     """
@@ -200,13 +196,43 @@ def select_tap(global_indices, peak_times, label="signal"):
             f"  Try: widen SEARCH_WINDOW_SEC (now={SEARCH_WINDOW_SEC})\n"
             f"  Check: was the tap within the first {SEARCH_WINDOW_SEC}s?"
         )
+
     if len(global_indices) > 1:
-        print(f"  [WARN] {len(global_indices)} peaks in [{label}] — picking FIRST.")
+        print(f"  [INFO] {len(global_indices)} peaks in [{label}]- picking FIRST")
         print(f"         All peaks: {[f't={tp:.3f}s' for tp in peak_times]}")
+    
+    # Pick largest peak
+    #best = np.argmax(proxy[global_indices])
 
     return global_indices[0], float(peak_times[0])
 
+def subframe_peak_time(proxy, peak_idx, t):
+    """Parabolic interpolation for sub-frame tap timing."""
+    i = int(peak_idx)
+    if i <= 0 or i >= len(proxy) - 1:
+        return float(t[i])
+    
+    y0, y1, y2 = float(proxy[i-1]), float(proxy[i]), float(proxy[i+1])
+    # Parabola vertex offset from i: delta = (y0 - y2) / (2*(y0 - 2*y1 + y2))
+    denom = y0 - 2.0*y1 + y2
+    if abs(denom) < 1e-12:
+        delta = 0.0
+    else:
+        delta = np.clip((y0 - y2) / (2.0 * denom), -0.5, 0.5)
+    
+    # Interpolate time linearly between neighboring timestamps
+    if delta >= 0:
+        dt_step = float(t[i+1] - t[i])
+    else:
+        dt_step = float(t[i] - t[i-1])
+    
+    t_peak = float(t[i]) + delta * dt_step
+    
+    # Forward-diff peaks land on the frame BEFORE the jump.
+    # Shift forward by half a frame interval to estimate true contact moment.
+    half_frame = float(t[i+1] - t[i]) / 2.0 if i+1 < len(t) else 0.0
 
+    return t_peak + half_frame
 # ─────────────────────────────────────────────────────────────
 #  SAVE
 # ─────────────────────────────────────────────────────────────
@@ -241,7 +267,18 @@ print("\n[1] Camera grid...")
 df_cam = pd.read_csv(PATH_CAMERA_GRID)
 grid_frames = df_cam["frame"].values.astype(int)
 X      = df_cam.drop(columns=["frame"]).values.astype(float)
-#t_cam  = (frames - frames[0]) / FS_CAM
+
+# Rebuild t_cam from grid frames only
+ts_df_grid = pd.read_csv(BASE / f"Camera_{REC_ID}" / "timestamps.csv")
+ts_df_grid = ts_df_grid.set_index("frame")
+grid_timestamps = ts_df_grid.loc[grid_frames, "timestamp"].values
+t_cam = (grid_timestamps - grid_timestamps[0]) / 1000.0
+
+# Recompute FS_CAM from grid timestamps
+intervals_grid = np.diff(t_cam)
+FS_CAM = float(1.0 / np.median(intervals_grid[intervals_grid > 0]))
+print(f"Actual camera FPS (grid): {FS_CAM:.2f}")
+
 print(f"    {X.shape[0]} grid_frames x {X.shape[1]} cells  |  {t_cam[-1]:.2f}s  at {FS_CAM}Hz")
 
 cam_proxy = build_camera_proxy(X)
@@ -285,20 +322,42 @@ for i, (gi, tp) in enumerate(zip(ms_idx, ms_times)):
 
 # 3. Select & compute offset
 print("\n[3] Selecting tap...")
-cam_tap_gi, cam_tap = select_tap(cam_idx, cam_times, label="camera")
-ms_tap_gi,  ms_tap  = select_tap(ms_idx,  ms_times,  label="movesense")
+cam_tap_gi, cam_tap = select_tap(cam_idx, cam_times, cam_proxy, label="camera")
+ms_tap_gi,  ms_tap  = select_tap(ms_idx,  ms_times, ms_proxy, label="movesense")
 
+cam_tap = subframe_peak_time(cam_proxy_s, cam_tap_gi, t_cam)
+ms_tap = subframe_peak_time(ms_proxy_s, ms_tap_gi, t_ms)
 dt = ms_tap - cam_tap
+
+print(f"  Camera tap (refined) : {cam_tap:.4f}s  (frame {grid_frames[cam_tap_gi]})")
+print(f"  Movesense tap (refined): {ms_tap:.4f}s")
+print(f"  dt: {dt:+.4f}s")
+
+
+# Also compute nearest-frame approach for comparison
+cam_nearest_idx = np.argmin(np.abs(t_cam - ms_tap))
+cam_nearest_t = float(t_cam[cam_nearest_idx])
+dt_nearest = ms_tap - cam_nearest_t
+
 
 if abs(dt) > 10.0:
     print("WARNING: dt suspiciously large — likely wrong peak pair")
 if abs(dt) < 0.05:
     print("WARNING: dt suspiciously small — may be noise")
 
+if abs(dt_nearest) > 10.0:
+    print("WARNING: dt_nearest suspiciously large")
+
+
 print(f"\n{'─'*50}")
 print(f"  Camera tap   : {cam_tap:.4f}s  (frame {grid_frames[cam_tap_gi]})")
+print(f"  Camera tap (nearest frame): {cam_nearest_t:.4f}s  (frame {grid_frames[cam_nearest_idx]})")
+
 print(f"  Movesense tap: {ms_tap:.4f}s")
-print(f"  Offset dt    : {dt:+.4f}s")
+
+print(f"  dt (largest peak): {dt:+.4f}s")
+print(f"  dt (nearest frame): {dt_nearest:+.4f}s")
+
 print(f"  Meaning      : t_camera + ({dt:+.4f}s) = t_movesense")
 print(f"{'─'*50}")
 
