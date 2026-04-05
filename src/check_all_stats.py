@@ -19,7 +19,7 @@ from openpyxl.utils import get_column_letter
 # ── CONFIG ──────────────────────────────────────────────────────────────
 BASE_DIR = Path(r"D:\recordings")
 OUTPUT_XLS = Path(r"C:\Projects\thesis\data") / "recording_log.xlsx"
-MAX_GAP_MS = 100   # threshold to flag a frame drop
+MAX_GAP_MS = 100   # threshold for max gap between 2 frames
 # ────────────────────────────────────────────────────────────────────────
 
 
