@@ -7,7 +7,7 @@ and writes a formatted Excel log: recording_log.xlsx
 Folder naming convention expected: {subject}_{distance}_{clothing}
 Example: andreas_800_tshirt, Sub01_1200_hoodie
 """
-
+import json
 import numpy as np
 import cv2
 import pandas as pd
@@ -21,7 +21,8 @@ BASE_DIR = Path(r"D:\recordings")
 OUTPUT_XLS = Path(r"C:\Projects\thesis\data") / "recording_log.xlsx"
 MAX_GAP_MS = 100   # threshold for max gap between 2 frames
 # ────────────────────────────────────────────────────────────────────────
-
+METADATA_OUT_DIR = Path(r"C:\Projects\thesis\data\metadata")
+METADATA_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 def check_recording(folder: Path) -> dict:
     """Run all checks on a single recording folder. Returns a dict of stats."""
@@ -105,6 +106,22 @@ def check_recording(folder: Path) -> dict:
         drops     = int((df["gap"] > MAX_GAP_MS).sum())
         max_gap   = round(df["gap"].max(), 1)
         duration  = round((df[ts_col].iloc[-1] - df[ts_col].iloc[0]) / 1000, 1)
+
+        # Save actual FPS to metadata.json for pipeline use
+        actual_fps = round(1000 / df["gap"].median(), 2)  # use median for accuracy
+        meta_path = METADATA_OUT_DIR / f"meta_{folder.name}.json"
+        if meta_path.exists():
+            with open(meta_path) as f:
+                meta = json.load(f)
+            meta["actual_fps"] = actual_fps
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=4)
+        else:
+            # Create minimal metadata for old recordings
+            meta = {"actual_fps": actual_fps, "depth_scale": 1.0}
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=4)
+        print(f"    → metadata.json saved (actual_fps={actual_fps})")
 
         result["total_frames"] = total
         result["duration_sec"] = duration

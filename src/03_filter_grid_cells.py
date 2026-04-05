@@ -8,7 +8,8 @@ from scipy.signal import butter, filtfilt
 INPUT_PATH = r"C:\Projects\thesis\data\GRID_Sub01_500_Tshirt.csv"
 OUTPUT_PATH = r"C:\Projects\thesis\data\FILTERED_Sub01_500_Tshirt.csv"
 
-FS = 30.0        # Sampling Rate
+# Expanded temporal filtering
+FS = 15.0        # Sampling Rate
 LOWCUT = 0.5     # 30 BPM
 HIGHCUT = 4.0    # 240 BPM
 ORDER = 4        # Butterworth Order
