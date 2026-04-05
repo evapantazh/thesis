@@ -1,7 +1,6 @@
 import pandas as pd
 import cv2
 import numpy as np
-import os
 from pathlib import Path
 
 DATA_DIR = Path(r"C:\Pictures")
@@ -34,12 +33,21 @@ def verify_alignment():
 
     if TIMESTAMPS_DIR.exists():
         df = pd.read_csv(TIMESTAMPS_DIR)
-        df['gap'] = df['depth_timestamp'].diff()
-        df['sync_gap'] = abs(df['depth_timestamp'] - df['color_timestamp'])
+
+        # Handle both old (timestamp) and new (depth_timestamp) column names
+        ts_col = "depth_timestamp" if "depth_timestamp" in df.columns else "timestamp"
+        df['gap'] = df[ts_col].diff()
+
         print(f"Total frames: {len(df)}")
         print(f"Average FPS: {1000 / df['gap'].mean():.1f}")
         print(f"Frame drops (gap > 100ms): {(df['gap'] > 100).sum()}")
-        print(f"Mean sync gap color-depth: {df['sync_gap'].mean():.2f} ms")
+
+        # Sync gap only available in new recordings
+        if "color_timestamp" in df.columns:
+            df['sync_gap'] = abs(df['depth_timestamp'] - df['color_timestamp'])
+            print(f"Mean sync gap color-depth: {df['sync_gap'].mean():.2f} ms")
+        else:
+            print("[i] Single timestamp format — sync gap not available")
     else:
         print("[!] No timestamps.csv found")
 
