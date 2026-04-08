@@ -1,0 +1,33 @@
+{
+    "cam_tap_sec": 1.8,
+    "ecg_tap_sec": 3.9312307692170143,
+    "ms_start_ts": 430074950,
+    "offset_sec": 2.131230769217014,
+    "protocol": "single_tap_first_peak",
+    "camera_debug": {
+        "sigma_samples": 0,
+        "prominence_threshold": 11921.232801996843,
+        "min_distance_samples": 7,
+        "num_peaks_found": 2,
+        "all_peak_times_sec": [
+            1.8,
+            2.3333333333333335
+        ],
+        "all_peak_values": [
+            19809.137816027338,
+            80003.623237781
+        ]
+    },
+    "ecg_debug": {
+        "sigma_samples": 1,
+        "prominence_threshold": 0.2574166424043525,
+        "min_distance_samples": 13,
+        "num_peaks_found": 1,
+        "all_peak_times_sec": [
+            3.9312307692170143
+        ],
+        "all_peak_values": [
+            2.0384405902964042
+        ]
+    }
+}
