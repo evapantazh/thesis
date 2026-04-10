@@ -3,6 +3,9 @@ ecg_diagnostic.py
 =================
 Examine raw ECG signal quality before attempting R-peak detection.
 Identifies: signal inversion, amplitude collapse, motion artifacts.
+
+NEEDS ADJUSTMENT TO NEW CODES!!!!!!!
+OLD CODE KEEP FOR LATER TO CHANGE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 """
 
 import numpy as np
