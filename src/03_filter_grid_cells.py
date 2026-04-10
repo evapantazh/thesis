@@ -4,6 +4,10 @@ from pathlib import Path
 from scipy.signal import butter, filtfilt
 import json
 
+# ADD DETRENDING LATER??????
+# KEEP IT FOR NOW AS IS
+
+
 # --- 1. SETTINGS & PATHS ---
 # Update this to your exact path
 
