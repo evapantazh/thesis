@@ -42,9 +42,9 @@ REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
 movesense_path = Path(r"D:\movesense")
 
 PATH_CAMERA_GRID = BASE / "GRID_files"/ f"GRID_andreas_800_tshirt.CSV"
-PATH_MOVESENSE   = movesense_path / f"Movesense_{REC_ID}"
-PATH_MOVESENSE_ACC = PATH_MOVESENSE / f"{REC_ID}_acc_stream.json"
-PATH_MOVESENSE_ECG = PATH_MOVESENSE / f"{REC_ID}_ecg_stream.json"
+PATH_MOVESENSE   = movesense_path / f"{REC_ID}"
+PATH_MOVESENSE_ACC = PATH_MOVESENSE / f"acc_stream.json"
+PATH_MOVESENSE_ECG = PATH_MOVESENSE / f"ecg_stream.json"
 PATH_OUTPUT_TAP_JSON = BASE / "tap_info" / f"Tap_info_{REC_ID}.json"
 
 
@@ -508,6 +508,6 @@ ax.set_xlabel("Time (s) — Movesense clock")
 ax.set_ylabel("Normalized amplitude")
 ax.legend(fontsize=8); ax.grid(alpha=0.3)
 
-out = PATH_OUTPUT_TAP_JSON.parent / f"{REC_ID}_tap_sync.png"
+out = PATH_OUTPUT_TAP_JSON.parent / f"tap_sync_{REC_ID}.png"
 plt.savefig(out, dpi=150)
 plt.show()

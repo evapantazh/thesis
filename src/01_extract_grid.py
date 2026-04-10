@@ -22,8 +22,8 @@ if len(sys.argv) > 1:
 
 else:
 
-    BASE     = Path(r"C:\Projects\thesis\data")
-    SUBJECT  = "andreas"
+    BASE     = Path(r"D:\recordings")
+    SUBJECT  = "AVE"
     DIST     = "1800"                             # 800, 1200, 1800
     CLOTH    = "hoodie"                           # Tshirt, Hoodie
     REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
