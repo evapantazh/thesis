@@ -3,6 +3,7 @@ import numpy as np
 from pathlib import Path
 from scipy.signal import butter, filtfilt
 import json
+import sys
 
 # ADD DETRENDING LATER??????
 # KEEP IT FOR NOW AS IS
@@ -11,10 +12,16 @@ import json
 # --- 1. SETTINGS & PATHS ---
 # Update this to your exact path
 
-SUBJECT  = "AGA"
-DIST     = "1800"                             # 800, 1200, 1800
-CLOTH    = "tshirt"                           # Tshirt, Hoodie
-REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
+BATCH_MODE = len(sys.argv) > 1
+
+if BATCH_MODE:
+    REC_ID = sys.argv[1]
+else:
+    # Default for manual runs
+    SUBJECT = "AVE"
+    DIST = "800"
+    CLOTH = "tshirt"
+    REC_ID = f"{SUBJECT}_{DIST}_{CLOTH}"
 
 GRID_DIR   = Path(r"C:\Projects\thesis\data\GRID_files")
 OUTPUT_DIR = Path(r"C:\Projects\thesis\data\FILTERED_files")
@@ -211,5 +218,6 @@ else:
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
     plot_path = PLOT_DIR / f"filter_check_{REC_ID}_{cell_name}.png"
     plt.savefig(plot_path, dpi=150)
-    plt.show()
+    if not BATCH_MODE:
+        plt.show()
     print(f"📊 Plot saved to: {plot_path}")
