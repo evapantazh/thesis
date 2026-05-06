@@ -1,341 +1,620 @@
 """
-02_find_chest_tap.py
-====================
-Detect chest tap in both camera grid signal and Movesense ACC,
-compute the time offset dt, and save to JSON.
+02c_manual_tap_selector.py
+==========================
+Manual chest tap selector with algorithm comparison.
 
-Protocol: ONE firm tap on sternum at the start of recording.
+Two camera proxies are computed and shown:
+  - FULL proxy   : all 28 cells (energy x coherence)
+  - STERNUM proxy: only cells [5,6,9,10,13,14] (centre chest)
 
-Camera tap detection:
-  Uses energy × coherence proxy. Picks the LARGEST peak in the
-  search window — the actual impact + rebound always dominates
-  over the hand-entry artifact.
+The sternum proxy should produce a cleaner tap signal because
+it ignores the hand entering/leaving the depth field and only
+reacts to motion at the sternum itself.
 
-Movesense tap detection:
-  Uses |gradient(acceleration magnitude)| on the 52 Hz ACC stream.
-  Picks the LARGEST peak — the mechanical impact is always the
-  strongest event in the search window.
+Viewer overlays:
+  - YELLOW bar  : depth proxy algorithm tap estimate (full proxy)
+  - CYAN bar    : sternum proxy algorithm tap estimate
+  - RED border  : within 0.12s of Movesense tap
+  - GREEN banner: your manually confirmed frame
+
+Controls:
+  LEFT / A    : previous frame
+  RIGHT / D   : next frame
+  SPACE       : confirm this frame as the tap
+  Q / ESC     : quit without saving
 """
 
+import cv2
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import signal
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import detrend
 import json
 from pathlib import Path
 
 # ─────────────────────────────────────────────────────────────
-#  FLAGS
+#  RECORDING  — edit these
 # ─────────────────────────────────────────────────────────────
-PLOT_SYNC = True
+SUBJECT = "GAX"
+DIST    = "800"
+CLOTH   = "tshirt"
 
 # ─────────────────────────────────────────────────────────────
 #  PATHS
 # ─────────────────────────────────────────────────────────────
 BASE     = Path(r"C:\Projects\thesis\data")
-SUBJECT  = "andreas"
-DIST     = "800"
-CLOTH    = "T-shirt"
-REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
-movesense_path = Path(r"D:\movesense")
+REC_BASE = Path(r"D:\recordings")
 
-PATH_CAMERA_GRID = BASE / "GRID_files"/ f"GRID_andreas_800_tshirt.CSV"
-PATH_MOVESENSE   = movesense_path / f"{REC_ID}"
-PATH_MOVESENSE_ACC = PATH_MOVESENSE / f"acc_stream.json"
-PATH_MOVESENSE_ECG = PATH_MOVESENSE / f"ecg_stream.json"
-PATH_OUTPUT_TAP_JSON = BASE / "tap_info" / f"Tap_info_{REC_ID}.json"
+REC_ID = f"{SUBJECT}_{DIST}_{CLOTH}"
+
+PATH_RECORDING     = REC_BASE / REC_ID
+PATH_COLOR_FRAMES  = PATH_RECORDING / "color"
+PATH_TIMESTAMPS    = PATH_RECORDING / "timestamps.csv"
+
+PATH_CAMERA_GRID   = BASE / "GRID_files" / f"GRID_{REC_ID}.csv"
+PATH_MOVESENSE     = BASE / "movesense" / REC_ID
+PATH_MOVESENSE_ACC = PATH_MOVESENSE / "acc_stream.json"
+
+PATH_OUTPUT_JSON   = BASE / "tap_info" / f"Tap_info_{REC_ID}.json"
+PATH_OUTPUT_PLOT   = BASE / "tap_info" / f"tap_sync_{REC_ID}.png"
+
+# ─────────────────────────────────────────────────────────────
+#  CONFIG
+# ─────────────────────────────────────────────────────────────
+SEARCH_WINDOW_SEC = 10.0
+DISPLAY_WIDTH     = 1024
+DISPLAY_HEIGHT    = 600
+FS_MS_ACC         = 52.0
+
+# Sternum cells confirmed by visualize_grid_cells.py
+# Grid is 7 rows x 4 cols, cell_idx = row*4 + col
+# Rows 1-3, cols 1-2 = centre chest / sternum
+STERNUM_CELLS = [5, 6, 9, 10, 13, 14]
+
+# Depth proxy algorithm settings
+TAP_SMOOTH_MS_CAM = 0.0
+TAP_SMOOTH_MS_MS  = 0.0
+PROMINENCE_SIGMA  = 2.0
+MIN_DISTANCE_SEC  = 0.25
 
 
 # ─────────────────────────────────────────────────────────────
-#  CONFIGURATION
-# ─────────────────────────────────────────────────────────────
-SEARCH_WINDOW_SEC  = 8.0
-
-# No smoothing — avoids shifting the detected peak away from
-# the true maximum. Both proxies are already clean enough.
-TAP_SMOOTH_MS_CAM  = 0.0
-TAP_SMOOTH_MS_MS   = 0.0
-
-# How many std above local noise a peak must be to count as a tap.
-PROMINENCE_SIGMA   = 2.0
-
-# Minimum gap between two peaks (avoids counting same tap twice).
-MIN_DISTANCE_SEC   = 0.25
-
-FS_MS_ACC = 52.0  # Movesense accelerometer sample rate
-
-
-# ─────────────────────────────────────────────────────────────
-#  HELPERS
+#  TIMESTAMP LOADER
 # ─────────────────────────────────────────────────────────────
 
-def robust_fs(t):
-    t  = np.asarray(t, float)
-    dt = np.diff(t)
-    dt = dt[np.isfinite(dt) & (dt > 0)]
-    return 1.0 / np.median(dt)
+def load_timestamps(path):
+    df = pd.read_csv(path).set_index("frame")
+    if "color_timestamp" in df.columns:
+        df["color_ts"] = df["color_timestamp"]
+    elif "timestamp" in df.columns:
+        df["color_ts"] = df["timestamp"]
+    else:
+        raise KeyError(f"No color timestamp column. Available: {df.columns.tolist()}")
 
-def normalize_zscore(x):
-    x = np.asarray(x, float)
-    return (x - np.mean(x)) / (np.std(x) + 1e-12)
+    if "depth_timestamp" in df.columns:
+        df["depth_ts"] = df["depth_timestamp"]
+    elif "timestamp" in df.columns:
+        df["depth_ts"] = df["timestamp"]
+    else:
+        raise KeyError(f"No depth timestamp column. Available: {df.columns.tolist()}")
+    return df
 
 
 # ─────────────────────────────────────────────────────────────
 #  PROXY BUILDERS
 # ─────────────────────────────────────────────────────────────
 
-def build_camera_proxy(X):
+def build_proxy_from_cells(X, cell_indices=None):
     """
-    Build a 1D tap proxy from the (T x N_cells) depth grid matrix.
-
-    proxy = energy × coherence
-      energy    = sum(abs(gradient))  -- total motion magnitude
-      coherence = abs(mean(gradient)) -- directional agreement across cells
-
-    Product is high ONLY when all cells move together = real impact.
+    Build energy x coherence proxy.
+    If cell_indices given, only use those columns.
     """
     X = np.asarray(X, float).copy()
 
-    # Replace invalid pixels with column median
+    if cell_indices is not None:
+        X = X[:, cell_indices]
+
     col_med = np.nanmedian(X, axis=0)
     for j in range(X.shape[1]):
         bad = (X[:, j] == 0) | ~np.isfinite(X[:, j])
         X[bad, j] = col_med[j]
 
-    dX = np.diff(X, axis=0, prepend=X[[0]])   # T x N_cells
-
-    energy    = np.sum(np.abs(dX), axis=1)     # T
-    coherence = np.abs(np.mean(dX, axis=1))    # T
-
-    return energy * coherence                   # T
+    dX        = np.diff(X, axis=0, prepend=X[[0]])
+    energy    = np.sum(np.abs(dX), axis=1)
+    coherence = np.abs(np.mean(dX, axis=1))
+    return energy * coherence
 
 
-def build_movesense_signal(acc_file):
-    with open(acc_file, 'r') as f:
-        data = json.load(f)['data']
-    
-    start_ts = data[0]['acc']['Timestamp']
-    all_timestamps = []
-    all_magnitudes = []
-
-    for entry in data:
-        ts = entry['acc']['Timestamp']
-        samples = entry['acc']['ArrayAcc']
-        for i, s in enumerate(samples):
-            mag = np.sqrt(s['x']**2 + s['y']**2 + s['z']**2)
-            all_magnitudes.append(mag)
-            all_timestamps.append(ts + (i * (1000.0 / 52.0))) 
-
-    all_timestamps = np.array(all_timestamps)
-    t_ms_relative = (all_timestamps - start_ts) / 1000.0
-
-    ms_proxy = np.abs(np.gradient(all_magnitudes))
-    return t_ms_relative, ms_proxy, start_ts
-
-
-# ─────────────────────────────────────────────────────────────
-#  PEAK DETECTION
-# ─────────────────────────────────────────────────────────────
-
-def find_tap_peaks(proxy, t, fs,
-                   search_window_sec,
-                   smooth_ms,
-                   prominence_sigma,
-                   min_distance_sec):
-    """
-    Find all tap candidate peaks within the search window.
-    Returns global indices, times, full smoothed proxy, and debug dict.
-    """
+def find_tap_peaks(proxy, t, fs, search_window_sec,
+                   smooth_ms, prominence_sigma, min_distance_sec):
     proxy = np.asarray(proxy, float)
     t     = np.asarray(t, float)
-
     mask  = t <= search_window_sec
     x     = proxy[mask]
-
     sigma = max(int((smooth_ms / 1000.0) * fs), 0)
-    x_s          = gaussian_filter1d(x, sigma=sigma) if sigma > 0 else x.copy()
+    x_s   = gaussian_filter1d(x, sigma=sigma) if sigma > 0 else x.copy()
     proxy_smooth = gaussian_filter1d(proxy, sigma=sigma) if sigma > 0 else proxy.copy()
-
     prom  = np.std(x_s) * prominence_sigma
     dist  = max(int(min_distance_sec * fs), 1)
-    peaks, props = signal.find_peaks(x_s, prominence=prom, distance=dist)
-
+    peaks, _ = signal.find_peaks(x_s, prominence=prom, distance=dist)
     global_indices = np.where(mask)[0][peaks]
     peak_times     = t[global_indices]
-
-    debug = {
-        "sigma_samples"        : int(sigma),
-        "prominence_threshold" : float(prom),
-        "min_distance_samples" : int(dist),
-        "num_peaks_found"      : int(len(peaks)),
-        "all_peak_times_sec"   : peak_times.tolist(),
-        "all_peak_values"      : proxy[global_indices].tolist(),
-    }
-
-    return global_indices, peak_times, proxy_smooth, debug
+    return global_indices, peak_times, proxy_smooth
 
 
-def select_tap_camera(global_indices, peak_times, proxy, t, label="camera"):
-    """
-    Find the contact moment for the CAMERA signal.
-
-    Physics of a chest tap in depth data:
-      1. Hand enters depth field  → BIG spike (hand appears)
-      2. Hand decelerates/hovers  → quiet (near-zero proxy)
-      3. Palm hits sternum        → SMALL bump (brief compression)
-      4. Hand withdraws + rebound → BIG spike (hand leaves, chest bounces)
-
-    The actual contact is the small local peak (#3) between the two
-    dominant peaks (#1 and #4). We find it by running peak detection
-    on the region between the two biggest peaks.
-
-    If no bump is found between the two peaks, fall back to the
-    valley (minimum) which is the closest approximation.
-
-    Requires at least 2 peaks. If only 1 peak found, falls back to it.
-    """
+def select_tap_camera(global_indices, peak_times, proxy, t, grid_frames):
+    """Returns (frame_id, t_sec, method_str)"""
     if len(global_indices) == 0:
-        raise ValueError(
-            f"No tap peak found in [{label}]!\n"
-            f"  Try: lower PROMINENCE_SIGMA (now={PROMINENCE_SIGMA}, try 1.5)\n"
-            f"  Try: widen SEARCH_WINDOW_SEC (now={SEARCH_WINDOW_SEC})\n"
-            f"  Check: was the tap within the first {SEARCH_WINDOW_SEC}s?"
-        )
+        return None, None, "no_peaks_found"
 
     if len(global_indices) < 2:
-        print(f"  [WARN] Only 1 peak in [{label}] — using it directly")
-        return global_indices[0], float(peak_times[0])
+        gi = global_indices[0]
+        return int(grid_frames[gi]), float(t[gi]), "single_peak_fallback"
 
-    # Find the two largest peaks
     sorted_by_value = np.argsort(proxy[global_indices])[::-1]
-    top2 = sorted(sorted_by_value[:2])  # sort by time order
-    gi_a = global_indices[top2[0]]  # earlier peak (hand entry)
-    gi_b = global_indices[top2[1]]  # later peak  (hand withdrawal)
-
-    print(f"  [{label}] Two dominant peaks:")
-    print(f"    Peak A (hand entry):      frame {gi_a}  t={t[gi_a]:.3f}s  proxy={proxy[gi_a]:.1f}")
-    print(f"    Peak B (hand withdrawal): frame {gi_b}  t={t[gi_b]:.3f}s  proxy={proxy[gi_b]:.1f}")
-
-    # Search for a small local peak (the contact bump) between A and B
-    # Exclude the endpoints (they are the big peaks themselves)
+    top2  = sorted(sorted_by_value[:2])
+    gi_a  = global_indices[top2[0]]
+    gi_b  = global_indices[top2[1]]
     start = gi_a + 1
-    end   = gi_b      # exclusive
+    end   = gi_b
+
     if end - start < 2:
-        # Too few frames between peaks — fall back to midpoint
         contact_gi = (gi_a + gi_b) // 2
-        contact_t  = float(t[contact_gi])
-        print(f"    [WARN] Only {end-start} frames between peaks — using midpoint")
-        print(f"    Contact (midpoint):       frame {contact_gi}  t={contact_t:.3f}s  proxy={proxy[contact_gi]:.1f}")
-        return contact_gi, contact_t
+        return int(grid_frames[contact_gi]), float(t[contact_gi]), "midpoint_fallback"
 
-    region = proxy[start:end]
-
-    # Find local peaks in the region between the two dominant peaks
-    # Use a low prominence threshold — the contact bump is small
+    region     = proxy[start:end]
     region_std = np.std(region)
     local_peaks, _ = signal.find_peaks(region, prominence=region_std * 0.5)
 
     if len(local_peaks) > 0:
-        # Pick the largest local peak between the two dominant peaks
         best_local = local_peaks[np.argmax(region[local_peaks])]
         contact_gi = start + best_local
-        contact_t  = float(t[contact_gi])
-        print(f"    Contact bump found:       frame {contact_gi}  t={contact_t:.3f}s  proxy={proxy[contact_gi]:.1f}")
-        # Show all candidates
-        for lp in local_peaks:
-            gi_lp = start + lp
-            marker = " <<<" if lp == best_local else ""
-            print(f"      candidate: frame {gi_lp}  t={t[gi_lp]:.3f}s  proxy={proxy[gi_lp]:.1f}{marker}")
+        return int(grid_frames[contact_gi]), float(t[contact_gi]), "contact_bump"
     else:
-        # No bump found — fall back to the frame just after the valley
-        # (the valley is the hand hovering; one frame later is likely contact)
         valley_local = np.argmin(region)
-        # Use the frame after the valley if possible
-        if valley_local + 1 < len(region):
-            contact_gi = start + valley_local + 1
-        else:
-            contact_gi = start + valley_local
-        contact_t = float(t[contact_gi])
-        print(f"    [WARN] No bump between peaks — using frame after valley")
-        print(f"    Contact (post-valley):    frame {contact_gi}  t={contact_t:.3f}s  proxy={proxy[contact_gi]:.1f}")
-
-    return contact_gi, contact_t
+        offset     = 1 if valley_local + 1 < len(region) else 0
+        contact_gi = start + valley_local + offset
+        return int(grid_frames[contact_gi]), float(t[contact_gi]), "post_valley_fallback"
 
 
-def select_tap_movesense(global_indices, peak_times, proxy, label="movesense"):
+def run_depth_algorithm(ts_df):
     """
-    Find the tap for the MOVESENSE signal.
-    Simply picks the LARGEST peak — the mechanical impact is always
-    the strongest event in the accelerometer search window.
+    Run depth proxy algorithm with BOTH full and sternum-only proxy.
+    Returns dicts for full and sternum results.
     """
-    if len(global_indices) == 0:
-        raise ValueError(
-            f"No tap peak found in [{label}]!\n"
-            f"  Try: lower PROMINENCE_SIGMA (now={PROMINENCE_SIGMA}, try 1.5)\n"
-            f"  Try: widen SEARCH_WINDOW_SEC (now={SEARCH_WINDOW_SEC})\n"
-            f"  Check: was the tap within the first {SEARCH_WINDOW_SEC}s?"
-        )
+    if not PATH_CAMERA_GRID.exists():
+        print(f"  [WARN] Grid file not found: {PATH_CAMERA_GRID}")
+        empty = (None, None, "grid_missing", None, None, None, None)
+        return empty, empty
 
-    best = np.argmax(proxy[global_indices])
+    df_cam      = pd.read_csv(PATH_CAMERA_GRID)
+    grid_frames = df_cam["frame"].values.astype(int)
+    X           = df_cam.drop(columns=["frame"]).values.astype(float)
 
-    if len(global_indices) > 1:
-        print(f"  [INFO] {len(global_indices)} peaks in [{label}] — picking LARGEST")
-        for i, (gi, tp) in enumerate(zip(global_indices, peak_times)):
-            marker = " <<<" if i == best else ""
-            print(f"         peak {i+1}: t={tp:.3f}s  proxy={proxy[gi]:.4f}{marker}")
+    grid_timestamps = ts_df.loc[grid_frames, "depth_ts"].values
+    t_cam = (grid_timestamps - grid_timestamps[0]) / 1000.0
 
-    return global_indices[best], float(peak_times[best])
+    intervals = np.diff(t_cam)
+    FS_CAM    = float(1.0 / np.median(intervals[intervals > 0]))
+    print(f"  Camera FPS (grid): {FS_CAM:.2f}")
 
+    # ── Full proxy ────────────────────────────────────────────
+    full_proxy = build_proxy_from_cells(X, cell_indices=None)
+    full_idx, full_times, full_smooth = find_tap_peaks(
+        full_proxy, t_cam, FS_CAM,
+        SEARCH_WINDOW_SEC, TAP_SMOOTH_MS_CAM, PROMINENCE_SIGMA, MIN_DISTANCE_SEC
+    )
+    full_frame, full_t, full_method = select_tap_camera(
+        full_idx, full_times, full_proxy, t_cam, grid_frames
+    )
+    print(f"  [FULL proxy]    tap: frame {full_frame}  t={full_t:.4f}s  [{full_method}]")
+    print(f"    peaks: {len(full_idx)}")
+    for i, (gi, tp) in enumerate(zip(full_idx, full_times)):
+        print(f"      peak {i+1}: frame={grid_frames[gi]}  t={tp:.3f}s  "
+              f"proxy={full_proxy[gi]:.1f}")
 
-def subframe_peak_time(proxy, peak_idx, t):
-    """
-    Parabolic interpolation for sub-sample tap timing.
-    
-    Uses the RAW proxy to find the true peak location between
-    discrete samples. No half-frame offset — the peak of the
-    proxy IS the event we want to time.
-    """
-    i = int(peak_idx)
-    if i <= 0 or i >= len(proxy) - 1:
-        return float(t[i])
-    
-    y0, y1, y2 = float(proxy[i-1]), float(proxy[i]), float(proxy[i+1])
-    denom = y0 - 2.0*y1 + y2
-    if abs(denom) < 1e-12:
-        delta = 0.0
-    else:
-        delta = np.clip((y0 - y2) / (2.0 * denom), -0.5, 0.5)
-    
-    # Interpolate time
-    if delta >= 0:
-        dt_step = float(t[i+1] - t[i])
-    else:
-        dt_step = float(t[i] - t[i-1])
-    
-    return float(t[i]) + delta * dt_step
+    # ── Sternum proxy ─────────────────────────────────────────
+    # Use valid sternum cell indices that exist in X
+    n_cells = X.shape[1]
+    valid_sternum = [c for c in STERNUM_CELLS if c < n_cells]
+    stern_proxy = build_proxy_from_cells(X, cell_indices=valid_sternum)
+    stern_idx, stern_times, stern_smooth = find_tap_peaks(
+        stern_proxy, t_cam, FS_CAM,
+        SEARCH_WINDOW_SEC, TAP_SMOOTH_MS_CAM, PROMINENCE_SIGMA, MIN_DISTANCE_SEC
+    )
+    stern_frame, stern_t, stern_method = select_tap_camera(
+        stern_idx, stern_times, stern_proxy, t_cam, grid_frames
+    )
+    print(f"  [STERNUM proxy] tap: frame {stern_frame}  t={stern_t:.4f}s  [{stern_method}]")
+    print(f"    peaks: {len(stern_idx)}")
+    for i, (gi, tp) in enumerate(zip(stern_idx, stern_times)):
+        print(f"      peak {i+1}: frame={grid_frames[gi]}  t={tp:.3f}s  "
+              f"proxy={stern_proxy[gi]:.1f}")
+
+    full_result  = (full_frame,  full_t,  full_method,
+                    full_proxy,  t_cam,   grid_frames, full_smooth)
+    stern_result = (stern_frame, stern_t, stern_method,
+                    stern_proxy, t_cam,   grid_frames, stern_smooth)
+
+    return full_result, stern_result
 
 
 # ─────────────────────────────────────────────────────────────
-#  SAVE
+#  MOVESENSE
 # ─────────────────────────────────────────────────────────────
 
-def save_tap_info(path, cam_tap, ecg_tap, dt, cam_dbg, ecg_dbg, ms_start_ts):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    info = {
-        "cam_tap_sec"  : float(cam_tap),
-        "ecg_tap_sec"  : float(ecg_tap),
-        "ms_start_ts"  : int(ms_start_ts),
-        "offset_sec"   : float(dt),
-        "protocol"     : "camera_valley_between_peaks__movesense_largest_peak",
-        "camera_debug" : cam_dbg,
-        "ecg_debug"    : ecg_dbg,
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(info, f, indent=4)
-    print(f"  Saved → {path}")
+def load_movesense_tap():
+    with open(PATH_MOVESENSE_ACC, 'r') as f:
+        data = json.load(f)['data']
+
+    start_ts   = data[0]['acc']['Timestamp']
+    timestamps, magnitudes = [], []
+
+    for entry in data:
+        ts      = entry['acc']['Timestamp']
+        samples = entry['acc']['ArrayAcc']
+        for i, s in enumerate(samples):
+            mag = np.sqrt(s['x']**2 + s['y']**2 + s['z']**2)
+            magnitudes.append(mag)
+            timestamps.append(ts + i * (1000.0 / FS_MS_ACC))
+
+    t_ms  = (np.array(timestamps) - start_ts) / 1000.0
+    proxy = np.abs(np.gradient(magnitudes))
+
+    ms_idx, ms_times, ms_proxy_smooth = find_tap_peaks(
+        proxy, t_ms, FS_MS_ACC,
+        SEARCH_WINDOW_SEC, TAP_SMOOTH_MS_MS, PROMINENCE_SIGMA, MIN_DISTANCE_SEC
+    )
+
+    if len(ms_idx) == 0:
+        raise ValueError("No Movesense peaks found!")
+
+    best   = np.argmax(proxy[ms_idx])
+    tap_gi = ms_idx[best]
+    tap_t  = float(t_ms[tap_gi])
+
+    i = int(tap_gi)
+    if 0 < i < len(proxy) - 1:
+        y0, y1, y2 = proxy[i-1], proxy[i], proxy[i+1]
+        denom = y0 - 2*y1 + y2
+        if abs(denom) > 1e-12:
+            delta  = np.clip((y0 - y2) / (2*denom), -0.5, 0.5)
+            tap_t += delta * float(t_ms[i+1] - t_ms[i])
+
+    print(f"  Movesense tap: {tap_t:.4f}s  "
+          f"(raw idx={tap_gi}  proxy={proxy[tap_gi]:.4f})")
+    print(f"  Peaks found: {len(ms_idx)}")
+    for i, (gi, tp) in enumerate(zip(ms_idx, ms_times)):
+        marker = " <<<" if i == best else ""
+        print(f"    peak {i+1}: t={tp:.3f}s  proxy={proxy[gi]:.4f}{marker}")
+
+    return tap_t, int(start_ts), t_ms, proxy, ms_proxy_smooth
+
+
+# ─────────────────────────────────────────────────────────────
+#  COLOR FRAMES
+# ─────────────────────────────────────────────────────────────
+
+def get_frames_in_window(ts_df):
+    jpgs = sorted(PATH_COLOR_FRAMES.glob("frame_*.jpg"),
+                  key=lambda p: int(p.stem.split("_")[1]))
+    if not jpgs:
+        raise FileNotFoundError(f"No frame_*.jpg in {PATH_COLOR_FRAMES}")
+
+    frame_ids = np.array([int(p.stem.split("_")[1]) for p in jpgs])
+    valid     = np.isin(frame_ids, ts_df.index.values)
+    jpgs      = [p for p, v in zip(jpgs, valid) if v]
+    frame_ids = frame_ids[valid]
+
+    timestamps = ts_df.loc[frame_ids, "color_ts"].values
+    t_sec      = (timestamps - timestamps[0]) / 1000.0
+
+    mask = t_sec <= SEARCH_WINDOW_SEC
+    return [
+        (int(fid), float(t), p)
+        for fid, t, p, ok in zip(frame_ids, t_sec, jpgs, mask) if ok
+    ]
+
+
+# ─────────────────────────────────────────────────────────────
+#  OVERLAY DRAWING
+# ─────────────────────────────────────────────────────────────
+
+def draw_overlay(frame_bgr, frame_id, t_sec, idx, total,
+                 ms_tap_t,
+                 full_frame, full_t,
+                 stern_frame, stern_t,
+                 confirmed_frame):
+    img = frame_bgr.copy()
+    H, W = img.shape[:2]
+
+    # Top dark bar
+    overlay = img.copy()
+    cv2.rectangle(overlay, (0, 0), (W, 110), (20, 20, 20), -1)
+    cv2.addWeighted(overlay, 0.65, img, 0.35, 0, img)
+
+    cv2.putText(img, f"Frame {frame_id:5d}   t = {t_sec:.3f}s",
+                (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.78, (255, 255, 255), 2)
+    cv2.putText(img,
+                f"[{idx+1}/{total}]   < LEFT/A    RIGHT/D >   "
+                f"SPACE = confirm   Q/ESC = quit",
+                (12, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (180, 180, 180), 1)
+
+    # Full proxy algorithm (yellow)
+    if full_frame is not None:
+        col = (0, 220, 220)
+        cv2.putText(img,
+                    f"FULL algo: frame {full_frame}  t={full_t:.3f}s  "
+                    f"(diff {t_sec - full_t:+.3f}s)",
+                    (12, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.48, col, 1)
+        if frame_id == full_frame:
+            cv2.rectangle(img, (W - 18, 0), (W, H), col, -1)
+            cv2.putText(img, "FULL", (W - 17, H // 2 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1)
+
+    # Sternum proxy algorithm (cyan)
+    if stern_frame is not None:
+        col = (255, 200, 0)
+        cv2.putText(img,
+                    f"STERN algo: frame {stern_frame}  t={stern_t:.3f}s  "
+                    f"(diff {t_sec - stern_t:+.3f}s)",
+                    (12, 98), cv2.FONT_HERSHEY_SIMPLEX, 0.48, col, 1)
+        if frame_id == stern_frame:
+            cv2.rectangle(img, (W - 36, 0), (W - 18, H), col, -1)
+            cv2.putText(img, "STN", (W - 35, H // 2 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 0, 0), 1)
+
+    # Bottom: Movesense reference
+    diff_ms = t_sec - ms_tap_t
+    cv2.putText(img,
+                f"Movesense tap: {ms_tap_t:.3f}s   (diff {diff_ms:+.3f}s)",
+                (12, H - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (80, 200, 255), 1)
+
+    # Red border near Movesense tap
+    if abs(diff_ms) < 0.12:
+        cv2.rectangle(img, (3, 3), (W - 3, H - 3), (0, 60, 220), 4)
+
+    # Green banner: confirmed
+    if confirmed_frame is not None and frame_id == confirmed_frame:
+        cv2.rectangle(img, (0, 110), (W, 142), (0, 160, 0), -1)
+        cv2.putText(img,
+                    f"  TAP CONFIRMED  frame {frame_id}  "
+                    f"(SPACE again to change)",
+                    (8, 133), cv2.FONT_HERSHEY_SIMPLEX, 0.56, (255, 255, 255), 2)
+
+    return img
+
+
+# ─────────────────────────────────────────────────────────────
+#  SUMMARY PLOT
+# ─────────────────────────────────────────────────────────────
+
+def save_summary_plot(t_cam, full_proxy, full_smooth, stern_proxy, stern_smooth,
+                      grid_frames, t_ms, ms_proxy, ms_proxy_smooth,
+                      full_frame, full_t, stern_frame, stern_t,
+                      manual_frame, manual_t, ms_tap_t,
+                      dt_full, dt_stern, dt_manual):
+
+    def norm(x):
+        return (x - np.mean(x)) / (np.std(x) + 1e-12)
+
+    a = ms_tap_t - 1.5
+    b = ms_tap_t + 2.5
+
+    fig, axes = plt.subplots(4, 1, figsize=(14, 17))
+    fig.subplots_adjust(top=0.94, hspace=0.45)
+    fig.suptitle(
+        f"Chest Tap Sync — {REC_ID}\n"
+        f"Full algo: fr{full_frame} t={full_t:.3f}s dt={dt_full:+.4f}s   |   "
+        f"Sternum algo: fr{stern_frame} t={stern_t:.3f}s dt={dt_stern:+.4f}s   |   "
+        f"Manual: fr{manual_frame} t={manual_t:.3f}s dt={dt_manual:+.4f}s",
+        fontsize=9
+    )
+
+    sw_c = t_cam <= SEARCH_WINDOW_SEC
+    sw_m = t_ms  <= SEARCH_WINDOW_SEC
+
+    # Plot 1: full search window — all signals
+    ax = axes[0]
+    ax.set_title(f"Full search window (0–{SEARCH_WINDOW_SEC}s) — unaligned")
+    ax.plot(t_cam[sw_c], norm(full_smooth[sw_c]),
+            color="steelblue", lw=1.5, label="Camera full proxy", alpha=0.7)
+    ax.plot(t_cam[sw_c], norm(stern_smooth[sw_c]),
+            color="mediumorchid", lw=1.5, label="Camera sternum proxy", alpha=0.9)
+    ax.plot(t_ms[sw_m],  norm(ms_proxy_smooth[sw_m]),
+            color="darkorange", lw=1.5, label="Movesense proxy")
+    if full_t is not None:
+        ax.axvline(full_t,   color="cyan",        ls="--", lw=1.5,
+                   label=f"Full algo: {full_t:.3f}s (fr{full_frame})")
+    if stern_t is not None:
+        ax.axvline(stern_t,  color="yellow",      ls="--", lw=1.5,
+                   label=f"Sternum algo: {stern_t:.3f}s (fr{stern_frame})")
+    ax.axvline(manual_t,     color="limegreen",   ls="--", lw=2,
+               label=f"Manual: {manual_t:.3f}s (fr{manual_frame})")
+    ax.axvline(ms_tap_t,     color="darkorange",  ls="--", lw=2,
+               label=f"MS tap: {ms_tap_t:.3f}s")
+    ax.set_xlabel("Time (s)"); ax.set_ylabel("Norm. amplitude")
+    ax.legend(fontsize=7, ncol=2); ax.grid(alpha=0.3)
+
+    # Plot 2: zoomed — sternum proxy vs Movesense unaligned
+    ax = axes[1]
+    ax.set_title("Zoomed — STERNUM proxy vs Movesense (unaligned)")
+    mc = (t_cam >= a) & (t_cam <= b)
+    mm = (t_ms  >= a) & (t_ms  <= b)
+    ax.plot(t_cam[mc], norm(stern_smooth[mc]),
+            color="mediumorchid", lw=2, label="Sternum proxy")
+    ax.plot(t_ms[mm],  norm(ms_proxy_smooth[mm]),
+            color="darkorange", lw=1.5, label="Movesense")
+    if stern_t is not None:
+        ax.axvline(stern_t, color="yellow",     ls="--", lw=1.8,
+                   label=f"Sternum algo: {stern_t:.3f}s")
+    ax.axvline(manual_t,    color="limegreen",  ls="--", lw=2,
+               label=f"Manual: {manual_t:.3f}s")
+    ax.axvline(ms_tap_t,    color="darkorange", ls="--", lw=2,
+               label=f"MS: {ms_tap_t:.3f}s")
+    ax.set_xlabel("Time (s)"); ax.set_ylabel("Norm. amplitude")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Plot 3: after alignment with sternum algo dt
+    ax = axes[2]
+    t_cam_aligned_stern = t_cam + dt_stern
+    ax.set_title(f"After alignment — STERNUM algo  (dt={dt_stern:+.4f}s)")
+    mc2 = (t_cam_aligned_stern >= a) & (t_cam_aligned_stern <= b)
+    ax.plot(t_cam_aligned_stern[mc2], norm(stern_smooth[mc2]),
+            color="mediumorchid", lw=2, label="Sternum proxy (aligned)")
+    ax.plot(t_ms[mm], norm(ms_proxy_smooth[mm]),
+            color="darkorange", lw=1.5, label="Movesense")
+    ax.axvline(ms_tap_t, color="black", ls="--", lw=2,
+               label=f"Common tap: {ms_tap_t:.3f}s")
+    ax.set_xlabel("Time (s) — Movesense clock")
+    ax.set_ylabel("Norm. amplitude")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    # Plot 4: after alignment with manual dt
+    ax = axes[3]
+    t_cam_aligned_manual = t_cam + dt_manual
+    ax.set_title(f"After alignment — MANUAL tap  (dt={dt_manual:+.4f}s)")
+    mc3 = (t_cam_aligned_manual >= a) & (t_cam_aligned_manual <= b)
+    ax.plot(t_cam_aligned_manual[mc3], norm(full_smooth[mc3]),
+            color="steelblue", lw=1.5, label="Full proxy (aligned)", alpha=0.7)
+    ax.plot(t_cam_aligned_manual[mc3], norm(stern_smooth[mc3]),
+            color="mediumorchid", lw=2, label="Sternum proxy (aligned)")
+    ax.plot(t_ms[mm], norm(ms_proxy_smooth[mm]),
+            color="darkorange", lw=1.5, label="Movesense")
+    ax.axvline(ms_tap_t, color="black", ls="--", lw=2,
+               label=f"Common tap: {ms_tap_t:.3f}s")
+    ax.set_xlabel("Time (s) — Movesense clock")
+    ax.set_ylabel("Norm. amplitude")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3)
+
+    PATH_OUTPUT_PLOT.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(PATH_OUTPUT_PLOT, dpi=150)
+    print(f"  Plot saved → {PATH_OUTPUT_PLOT}")
+    plt.show(block = False)
+# -----------------------------------------------
+# THESIS FIGUTE
+# --------------------------------
+def save_thesis_figure(t_cam, stern_smooth, t_ms, ms_proxy_smooth,
+                       stern_t, ms_tap_t, dt_stern,
+                       manual_frame, manual_t, dt_manual):
+    """
+    Clean two-panel thesis figure:
+      Left  — signals BEFORE alignment (own clocks)
+      Right — signals AFTER alignment (common clock)
+ 
+    Only shows the sternum proxy and Movesense — the two cleanest signals.
+    No debug info, no algorithm markers cluttering the plot.
+    """
+    PATH_THESIS = PATH_OUTPUT_PLOT.parent / f"thesis_sync_{REC_ID}.png"
+ 
+    def norm(x):
+        return (x - np.mean(x)) / (np.std(x) + 1e-12)
+    from scipy.ndimage import gaussian_filter1d
+
+    def smooth(x, ms, fs):
+        sigma = max((ms / 1000.0) * fs / 2.355, 0.5)  # ms → sigma in samples
+        return gaussian_filter1d(x, sigma=sigma)
+
+    # Smooth both signals just for display (does NOT affect dt calculation)
+    FS_CAM_EST  = 1.0 / float(np.median(np.diff(t_cam[t_cam > 0])))
+    FS_MS_EST   = 52.0
+
+    stern_display = smooth(stern_smooth, ms=80,  fs=FS_CAM_EST)   # ~80ms smooth
+    ms_display    = smooth(ms_proxy_smooth, ms=80, fs=FS_MS_EST)  # ~40ms smooth
+
+    # Use manual dt for the thesis (ground truth)
+    dt = dt_manual
+    tap_t_common = ms_tap_t
+ 
+    # Time window to show: centred on the tap event
+    a = tap_t_common - 1.2
+    b = tap_t_common + 1.8
+ 
+    t_cam_aligned = t_cam + dt
+ 
+    # Masks for the zoom window
+    mc_raw  = (t_cam          >= a) & (t_cam          <= b)
+    mc_aln  = (t_cam_aligned  >= a) & (t_cam_aligned  <= b)
+    mm      = (t_ms           >= a) & (t_ms           <= b)
+ 
+    # ── Figure setup ──────────────────────────────────────────
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5),
+                                   )
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.82,
+                        bottom=0.14, wspace=0.08)
+ 
+    STERN_COLOR = "#7B52AB"   # purple
+    MS_COLOR    = "#E07B00"   # amber
+    TAP_COLOR   = "#222222"   # near-black dashed line
+ 
+    lw_sig = 2.0
+    lw_tap = 1.6
+ 
+    # ── Left panel: BEFORE alignment ─────────────────────────
+    ax1.plot(t_cam[mc_raw], norm(stern_display[mc_raw]),
+             color=STERN_COLOR, lw=lw_sig,
+             label="Depth camera\n(sternum cells)")
+    ax1.plot(t_ms[mm], norm(ms_display[mm]),
+             color=MS_COLOR, lw=lw_sig,
+             label="Movesense ACC\n(|∇|magnitude)")
+ 
+    # Tap markers on own clocks
+    ax1.axvline(manual_t,  color=STERN_COLOR, ls="--", lw=lw_tap, alpha=0.8)
+    ax1.axvline(ms_tap_t,  color=MS_COLOR,    ls="--", lw=lw_tap, alpha=0.8)
+ 
+    # Annotation: dt gap
+    y_arrow = ax1.get_ylim()[1] * 0.85 if ax1.get_ylim()[1] > 0 else 3.0
+    ax1.annotate("",
+                 xy=(ms_tap_t, 2.5), xytext=(manual_t, 2.5),
+                 arrowprops=dict(arrowstyle="<->", color="dimgray", lw=1.8))
+    ax1.text((ms_tap_t + manual_t) / 2, 2.7,
+             f"Δt = {abs(dt):.3f}s",
+             ha="center", va="bottom", fontsize=10, color="gray", fontweight ="bold")
+ 
+    ax1.set_xlim(-0.8, 5.5)
+    ax1.set_xlabel("Time (s) — own clocks", fontsize=11)
+    ax1.set_ylabel("Normalised amplitude", fontsize=11)
+    ax1.set_title("Before synchronisation", fontsize=12, fontweight="bold")
+    ax1.legend(loc="upper right", fontsize=9, framealpha=0.85)
+    ax1.grid(alpha=0.25, lw=0.8)
+    ax1.spines[["top", "right"]].set_visible(False)
+ 
+    # ── Right panel: AFTER alignment ─────────────────────────
+    ax2.plot(t_cam_aligned[mc_aln], norm(stern_display[mc_aln]),
+             color=STERN_COLOR, lw=lw_sig,
+             label="Depth camera\n(aligned)")
+    ax2.plot(t_ms[mm], norm(ms_display[mm]),
+             color=MS_COLOR, lw=lw_sig,
+             label="Movesense ACC")
+ 
+    # Common tap line
+    ax2.axvline(tap_t_common, color=TAP_COLOR, ls="--", lw=lw_tap,
+                label=f"Tap  t = {tap_t_common:.3f}s")
+ 
+    ax2.set_xlim(-0.8, 5.5)
+    ax2.set_xlabel("Time (s) — common clock", fontsize=11)
+    ax2.set_title("After synchronisation", fontsize=12, fontweight="bold")
+    ax2.legend(loc="upper right", fontsize=9, framealpha=0.85)
+    ax2.grid(alpha=0.25, lw=0.8)
+    ax2.spines[["top", "right"]].set_visible(False)
+    ax2.tick_params(left=False)
+ 
+    # ── Super title ───────────────────────────────────────────
+    fig.suptitle(
+        f"Chest tap synchronisation — depth camera & Movesense IMU\n"
+        f"Recording: {REC_ID}   |   "
+        f"Manual tap: frame {manual_frame}   |   "
+        f"dt = {dt:+.4f} s",
+        fontsize=10, color="#333333"
+    )
+ 
+    PATH_THESIS.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(PATH_THESIS, dpi=200, bbox_inches="tight")
+    print(f"  Thesis figure saved → {PATH_THESIS}")
+    plt.show()
+ 
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -343,171 +622,164 @@ def save_tap_info(path, cam_tap, ecg_tap, dt, cam_dbg, ecg_dbg, ms_start_ts):
 # ─────────────────────────────────────────────────────────────
 
 print("=" * 60)
-print("CHEST TAP DETECTION")
+print("MANUAL TAP SELECTOR  +  ALGORITHM COMPARISON")
+print(f"Recording : {REC_ID}")
+print(f"Sternum cells: {STERNUM_CELLS}")
 print("=" * 60)
 
-# 1. Camera
-print("\n[1] Camera grid...")
-df_cam = pd.read_csv(PATH_CAMERA_GRID)
-grid_frames = df_cam["frame"].values.astype(int)
-X      = df_cam.drop(columns=["frame"]).values.astype(float)
+print("\n[1] Timestamps...")
+ts_df = load_timestamps(PATH_TIMESTAMPS)
+print(f"  {len(ts_df)} frames")
 
-# Rebuild t_cam from grid frames only
-ts_df_grid = pd.read_csv(BASE / "andreas_800_tshirt" / "timestamps.csv")
-ts_df_grid = ts_df_grid.set_index("frame")
-grid_timestamps = ts_df_grid.loc[grid_frames, "timestamp"].values
-t_cam = (grid_timestamps - grid_timestamps[0]) / 1000.0
+print("\n[2] Movesense ACC...")
+ms_tap_t, ms_start_ts, t_ms, ms_proxy, ms_proxy_smooth = load_movesense_tap()
 
-# Recompute FS_CAM from grid timestamps
-intervals_grid = np.diff(t_cam)
-FS_CAM = float(1.0 / np.median(intervals_grid[intervals_grid > 0]))
-print(f"  Actual camera FPS (grid): {FS_CAM:.2f}")
-print(f"    {X.shape[0]} grid_frames x {X.shape[1]} cells  |  {t_cam[-1]:.2f}s  at {FS_CAM:.2f}Hz")
+print("\n[3] Depth proxy algorithm (full + sternum)...")
+full_result, stern_result = run_depth_algorithm(ts_df)
+(full_frame,  full_t,  full_method,
+ full_proxy,  t_cam,   grid_frames, full_smooth)  = full_result
+(stern_frame, stern_t, stern_method,
+ stern_proxy, _,       _,           stern_smooth) = stern_result
 
-cam_proxy = build_camera_proxy(X)
+print("\n[4] Color frames in search window...")
+frames = get_frames_in_window(ts_df)
+print(f"  {len(frames)} frames  (t=0 to {frames[-1][1]:.2f}s)")
 
-# DEBUG: top proxy values in search window
-mask_dbg = t_cam <= SEARCH_WINDOW_SEC
-top5_idx = np.argsort(cam_proxy[mask_dbg])[-5:][::-1]
-print("  Top 5 proxy values in search window:")
-for i in top5_idx:
-    print(f"    frame={grid_frames[i]:4d}  t={t_cam[i]:.3f}s  proxy={cam_proxy[i]:.1f}")
+# Start ~1s before Movesense tap
+start_idx = 0
+for i, (fid, t, p) in enumerate(frames):
+    if t >= ms_tap_t - 1.0:
+        start_idx = max(0, i - 5)
+        break
 
-cam_idx, cam_times, cam_proxy_s, cam_dbg = find_tap_peaks(
-    cam_proxy, t_cam, FS_CAM,
-    SEARCH_WINDOW_SEC, TAP_SMOOTH_MS_CAM, PROMINENCE_SIGMA, MIN_DISTANCE_SEC
-)
+print(f"\n  Opening viewer at frame index {start_idx}...")
+print("  Controls:  LEFT/A = back   RIGHT/D = forward   "
+      "SPACE = confirm   Q/ESC = quit")
+print(f"  YELLOW/CYAN bars = algorithm taps")
+print(f"  RED border       = within 0.12s of Movesense ({ms_tap_t:.3f}s)")
+print(f"  GREEN banner     = confirmed frame\n")
 
-print(f"    Peaks found: {cam_dbg['num_peaks_found']}")
-for i, (gi, tp) in enumerate(zip(cam_idx, cam_times)):
-    print(f"      peak {i+1}: t={tp:.3f}s  frame={grid_frames[gi]}  "
-          f"proxy={cam_proxy[gi]:.1f}")
+# ── Interactive viewer ────────────────────────────────────────
+cv2.namedWindow("Tap Selector", cv2.WINDOW_NORMAL)
+cv2.resizeWindow("Tap Selector", DISPLAY_WIDTH, DISPLAY_HEIGHT)
 
-# 2. Movesense
-print("\n[2] Movesense ACC for synchronization...")
+idx             = start_idx
+confirmed_frame = None
+confirmed_t     = None
+cache           = {}
 
-t_ms, ms_proxy, ms_start_ts = build_movesense_signal(PATH_MOVESENSE_ACC)
-fs_ms = FS_MS_ACC
+def get_frame_img(entry):
+    fid, t, path = entry
+    if fid not in cache:
+        img = cv2.imread(str(path))
+        if img is None:
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(img, f"Cannot load frame {fid}",
+                        (20, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        cache[fid] = img
+    return cache[fid]
 
-print(f"    {len(ms_proxy)} samples  |  {t_ms[-1]:.2f}s  at {fs_ms}Hz")
+while True:
+    fid, t_sec, _ = frames[idx]
+    raw  = get_frame_img(frames[idx])
+    disp = draw_overlay(raw, fid, t_sec, idx, len(frames),
+                        ms_tap_t,
+                        full_frame, full_t,
+                        stern_frame, stern_t,
+                        confirmed_frame)
+    cv2.imshow("Tap Selector", cv2.resize(disp, (DISPLAY_WIDTH, DISPLAY_HEIGHT)))
+    cv2.waitKey(1)   # force render on Windows
 
-ms_idx, ms_times, ms_proxy_s, ms_dbg = find_tap_peaks(
-    ms_proxy, t_ms, fs_ms,
-    SEARCH_WINDOW_SEC, TAP_SMOOTH_MS_MS, PROMINENCE_SIGMA, MIN_DISTANCE_SEC
-)
+    key = cv2.waitKey(0) & 0xFF
 
-print(f"    Peaks found: {ms_dbg['num_peaks_found']}")
-for i, (gi, tp) in enumerate(zip(ms_idx, ms_times)):
-    print(f"      peak {i+1}: t={tp:.3f}s  idx={gi}  "
-          f"proxy={ms_proxy[gi]:.4f}")
+    if key in (2, 81, ord('a'), ord('A')):
+        idx = max(0, idx - 1)
+    elif key in (3, 83, ord('d'), ord('D')):
+        idx = min(len(frames) - 1, idx + 1)
+    elif key == ord(' '):
+        confirmed_frame = fid
+        confirmed_t     = t_sec
+        print(f"  ✓ Tap confirmed: frame {fid}  t={t_sec:.4f}s")
+    elif key in (27, ord('q'), ord('Q')):
+        break
+    if key != 255:
+        print(f"  DEBUG key={key}  char={chr(key) if 32<=key<127 else '?'}")
 
+cv2.destroyAllWindows()
 
-# 3. Select & compute offset
-print("\n[3] Selecting tap...")
-cam_tap_gi, cam_tap = select_tap_camera(cam_idx, cam_times, cam_proxy, t_cam, label="camera")
-ms_tap_gi,  ms_tap  = select_tap_movesense(ms_idx, ms_times, ms_proxy, label="movesense")
+# ── Results ───────────────────────────────────────────────────
+if confirmed_frame is None:
+    print("\n  No tap confirmed — nothing saved.")
+else:
+    dt_manual = ms_tap_t - confirmed_t
+    dt_full   = (ms_tap_t - full_t)  if full_t  is not None else None
+    dt_stern  = (ms_tap_t - stern_t) if stern_t is not None else None
 
-# Camera contact is a VALLEY (minimum between peaks) — no parabolic peak refinement.
-# The discrete frame timestamp is the best estimate.
-cam_tap_refined = cam_tap
-# Movesense: refine with parabolic interpolation on the RAW proxy
-ms_tap_refined  = subframe_peak_time(ms_proxy, ms_tap_gi, t_ms)
-dt = ms_tap_refined - cam_tap_refined
+    print(f"\n{'='*60}")
+    print(f"  COMPARISON SUMMARY")
+    print(f"{'─'*60}")
+    if full_frame is not None:
+        print(f"  Full proxy algo  : frame {full_frame:4d}  t={full_t:.4f}s  "
+              f"dt={dt_full:+.4f}s  [{full_method}]")
+    if stern_frame is not None:
+        print(f"  Sternum algo     : frame {stern_frame:4d}  t={stern_t:.4f}s  "
+              f"dt={dt_stern:+.4f}s  [{stern_method}]")
+    print(f"  Manual tap       : frame {confirmed_frame:4d}  t={confirmed_t:.4f}s  "
+          f"dt={dt_manual:+.4f}s")
+    print(f"  Movesense tap    : t={ms_tap_t:.4f}s")
+    print(f"{'─'*60}")
 
-print(f"  Camera tap  : frame {grid_frames[cam_tap_gi]}  "
-      f"t={t_cam[cam_tap_gi]:.4f}s  (refined: {cam_tap_refined:.4f}s)")
-print(f"  Movesense tap: idx {ms_tap_gi}  "
-      f"t={t_ms[ms_tap_gi]:.4f}s  (refined: {ms_tap_refined:.4f}s)")
-print(f"  dt: {dt:+.4f}s")
+    for label, frame_algo, t_algo in [
+        ("Full vs Manual",    full_frame,  full_t),
+        ("Sternum vs Manual", stern_frame, stern_t),
+    ]:
+        if frame_algo is not None:
+            fd = abs(confirmed_frame - frame_algo)
+            td = abs(confirmed_t - t_algo)
+            status = "OK" if fd == 0 else ("CLOSE" if fd <= 2 else "WRONG")
+            print(f"  {label}: {fd} frame(s) ({td:.4f}s) — {status}")
 
+    print(f"{'='*60}")
+    print(f"  Using MANUAL tap. dt = {dt_manual:+.4f}s")
+    print(f"{'='*60}")
 
-if abs(dt) > 10.0:
-    print("  WARNING: dt suspiciously large — likely wrong peak pair")
-if abs(dt) < 0.01:
-    print("  NOTE: dt very small — clocks nearly aligned")
+    # Save JSON
+    PATH_OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
+    out = {
+        "rec_id"           : REC_ID,
+        "manual_tap_frame" : int(confirmed_frame),
+        "manual_tap_sec"   : float(confirmed_t),
+        "full_algo_frame"  : int(full_frame)  if full_frame  is not None else None,
+        "full_algo_sec"    : float(full_t)    if full_t      is not None else None,
+        "full_algo_method" : full_method,
+        "stern_algo_frame" : int(stern_frame) if stern_frame is not None else None,
+        "stern_algo_sec"   : float(stern_t)   if stern_t    is not None else None,
+        "stern_algo_method": stern_method,
+        "ms_tap_sec"       : float(ms_tap_t),
+        "ms_start_ts"      : int(ms_start_ts),
+        "offset_sec"       : float(dt_manual),
+        "offset_full_algo" : float(dt_full)  if dt_full  is not None else None,
+        "offset_stern_algo": float(dt_stern) if dt_stern is not None else None,
+        "method"           : "manual_color_frame_selection",
+        "sternum_cells"    : STERNUM_CELLS,
+    }
+    with open(PATH_OUTPUT_JSON, "w") as f:
+        json.dump(out, f, indent=4)
+    print(f"\n  Saved → {PATH_OUTPUT_JSON}")
 
-
-print(f"\n{'─'*50}")
-print(f"  Camera tap    : {cam_tap_refined:.4f}s  (frame {grid_frames[cam_tap_gi]})")
-print(f"  Movesense tap : {ms_tap_refined:.4f}s")
-print(f"  dt            : {dt:+.4f}s")
-print(f"  Meaning       : t_camera + ({dt:+.4f}s) = t_movesense")
-print(f"{'─'*50}")
-
-save_tap_info(PATH_OUTPUT_TAP_JSON, cam_tap_refined, ms_tap_refined, dt,
-              cam_dbg, ms_dbg, ms_start_ts)
-
-# 4. Plots
-if not PLOT_SYNC:
-    raise SystemExit(0)
-
-t_cam_aligned = t_cam + dt
-a = ms_tap_refined - 1.5
-b = ms_tap_refined + 3.0
-
-fig, axes = plt.subplots(3, 1, figsize=(14, 15))
-fig.subplots_adjust(top=0.93, hspace=0.45)
-
-fig.suptitle(
-    f"Chest Tap Sync — {REC_ID}\n",
-    fontsize=12
-)
-
-# Plot 1: Full search window unaligned
-ax = axes[0]
-ax.set_title(f"Search window (0 – {SEARCH_WINDOW_SEC}s) — unaligned, own clocks")
-sw_c = t_cam <= SEARCH_WINDOW_SEC
-sw_m = t_ms  <= SEARCH_WINDOW_SEC
-ax.plot(t_cam[sw_c], normalize_zscore(cam_proxy_s[sw_c]),
-        color="steelblue",  label="Camera proxy",    linewidth=1.5)
-ax.plot(t_ms[sw_m],  normalize_zscore(ms_proxy_s[sw_m]),
-        color="darkorange", label="Movesense proxy", linewidth=1.5)
-for tp in cam_times:
-    ax.axvline(tp, color="steelblue",  linestyle=":", alpha=0.5)
-for tp in ms_times:
-    ax.axvline(tp, color="darkorange", linestyle=":", alpha=0.5)
-ax.axvline(cam_tap_refined, color="steelblue",  linestyle="--", lw=2,
-           label=f"Cam tap: {cam_tap_refined:.3f}s (fr{grid_frames[cam_tap_gi]})")
-ax.axvline(ms_tap_refined,  color="darkorange", linestyle="--", lw=2,
-           label=f"MS tap:  {ms_tap_refined:.3f}s")
-ax.set_xlabel("Time (s) — own clock")
-ax.set_ylabel("Normalized amplitude")
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-# Plot 2: Zoomed unaligned
-ax = axes[1]
-ax.set_title("Zoomed around tap — UNALIGNED")
-mc = (t_cam >= a) & (t_cam <= b)
-mm = (t_ms  >= a) & (t_ms  <= b)
-ax.plot(t_cam[mc], normalize_zscore(cam_proxy_s[mc]),
-        color="steelblue",  label="Camera", linewidth=1.5)
-ax.plot(t_ms[mm],  normalize_zscore(ms_proxy_s[mm]),
-        color="darkorange", label="Movesense", linewidth=1.5)
-ax.axvline(cam_tap_refined, color="steelblue",  linestyle="--", lw=2,
-           label=f"Cam: {cam_tap_refined:.3f}s")
-ax.axvline(ms_tap_refined,  color="darkorange", linestyle="--", lw=2,
-           label=f"MS:  {ms_tap_refined:.3f}s")
-ax.set_xlabel("Time (s) — own clock")
-ax.set_ylabel("Normalized amplitude")
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-# Plot 3: After alignment — peaks must overlap
-ax = axes[2]
-ax.set_title(
-    f"After alignment (camera {dt:+.4f}s)"
-)
-mc2 = (t_cam_aligned >= a) & (t_cam_aligned <= b)
-mm2 = (t_ms          >= a) & (t_ms          <= b)
-ax.plot(t_cam_aligned[mc2], normalize_zscore(cam_proxy_s[mc2]),
-        color="steelblue",  label="Camera (aligned)", linewidth=1.5)
-ax.plot(t_ms[mm2],          normalize_zscore(ms_proxy_s[mm2]),
-        color="darkorange", label="Movesense", linewidth=1.5)
-ax.axvline(ms_tap_refined, color="black", linestyle="--", lw=2,
-           label=f"Common tap: {ms_tap_refined:.3f}s")
-ax.set_xlabel("Time (s) — Movesense clock")
-ax.set_ylabel("Normalized amplitude")
-ax.legend(fontsize=8); ax.grid(alpha=0.3)
-
-out = PATH_OUTPUT_TAP_JSON.parent / f"tap_sync_{REC_ID}.png"
-plt.savefig(out, dpi=150)
-plt.show()
+    # Summary plot
+    if full_proxy is not None:
+        save_summary_plot(
+            t_cam, full_proxy, full_smooth, stern_proxy, stern_smooth,
+            grid_frames, t_ms, ms_proxy, ms_proxy_smooth,
+            full_frame, full_t, stern_frame, stern_t,
+            confirmed_frame, confirmed_t, ms_tap_t,
+            dt_full, dt_stern, dt_manual
+        )
+    # Thesis figure (clean two-panel version)
+    if stern_smooth is not None:
+        save_thesis_figure(
+            t_cam, stern_smooth, t_ms, ms_proxy_smooth,
+            stern_t, ms_tap_t, dt_stern,
+            confirmed_frame, confirmed_t, dt_manual
+        )   
