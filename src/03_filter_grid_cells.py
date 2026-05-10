@@ -4,6 +4,7 @@ from pathlib import Path
 from scipy.signal import butter, filtfilt
 import json
 import sys
+from scipy.signal import detrend
 
 # ADD DETRENDING LATER??????
 # KEEP IT FOR NOW AS IS
@@ -20,7 +21,7 @@ else:
     # Default for manual runs
     SUBJECT = "AVE"
     DIST = "800"
-    CLOTH = "tshirt"
+    CLOTH = "hoodie"
     REC_ID = f"{SUBJECT}_{DIST}_{CLOTH}"
 
 GRID_DIR   = Path(r"C:\Projects\thesis\data\GRID_files")
@@ -28,7 +29,7 @@ OUTPUT_DIR = Path(r"C:\Projects\thesis\data\FILTERED_files")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 INPUT_PATH  = GRID_DIR   / f"GRID_{REC_ID}.csv"
-OUTPUT_PATH = OUTPUT_DIR / f"FILTERED_{REC_ID}.csv"
+OUTPUT_PATH = OUTPUT_DIR / f"FILTERED_DETRENDED_{REC_ID}.csv"
 
 METADATA_PATH = Path(r"C:\Projects\thesis\data\metadata")
 
@@ -36,7 +37,7 @@ meta_file = METADATA_PATH/f"meta_{REC_ID}.json"
 
 # --- LOAD TAP INFO ---
 TAP_DIR = Path(r"C:\Projects\thesis\data\tap_info")
-tap_file = TAP_DIR / f"Tap_info_{REC_ID}.json"
+tap_file = TAP_DIR / "json"/ f"Tap_info_{REC_ID}.json"
 
 
 SETTLE_SEC = 5.0  # seconds after tap to start usable signal
@@ -60,8 +61,8 @@ except FileNotFoundError:
 try:
     with open(tap_file, 'r') as f:
         tap_info = json.load(f)
-    CAM_TAP_SEC = tap_info["cam_tap_sec"]
-    print(f"Chest tap at {CAM_TAP_SEC:.3f}s (camera time)")
+    CAM_TAP_SEC = tap_info["manual_tap_sec"]
+    print(f"Camera Chest tap at {CAM_TAP_SEC:.3f}s (camera time)")
 except FileNotFoundError:
     CAM_TAP_SEC = None
     print("⚠️ No tap info found — cannot auto-trim")
@@ -86,7 +87,21 @@ else:
     # Compute trim point from tap info
     time_axis_full = df['frame'].values  # frame numbers
     # We need time in seconds — use frame index / FS as approximation
-    time_sec = np.arange(len(df)) / FS
+    #time_sec = np.arange(len(df)) / FS
+
+    #  |
+    #  |
+    #  v
+
+    # We don't just assume every frame is exactly 1/15 seconds apart. There might be a frame drop for example. So
+
+    # new — real timestamps
+    ts_df_filter = pd.read_csv(Path(r"D:\recordings") / REC_ID / "timestamps.csv").set_index("frame")
+    depth_col = "depth_timestamp" if "depth_timestamp" in ts_df_filter.columns else "timestamp"
+    grid_frames = df["frame"].values
+    timestamps = ts_df_filter.loc[grid_frames, depth_col].values
+    time_sec = (timestamps - timestamps[0]) / 1000.0 
+
 
     if CAM_TAP_SEC is not None:
         trim_sec = CAM_TAP_SEC + SETTLE_SEC
@@ -152,6 +167,19 @@ else:
                     filtered_df[cell_name] = 0.0
                     continue
 
+
+            # Clip sudden jumps (steps larger than N*std of diff)
+            diffs = np.diff(raw_signal, prepend=raw_signal[0])
+            jump_threshold = 3 * np.std(diffs)
+            jump_mask = np.abs(diffs) > jump_threshold
+            if jump_mask.any():
+                indices = np.arange(len(raw_signal))
+                good = ~jump_mask
+                raw_signal[jump_mask] = np.interp(indices[jump_mask], indices[good], raw_signal[good])
+
+            # Then detrend
+            raw_signal = detrend(raw_signal, type='linear')    
+
             # Apply Filter
             filt_signal = butter_bandpass_filter(raw_signal, LOWCUT, HIGHCUT, FS, order=ORDER)
             
@@ -184,10 +212,20 @@ else:
         good = ~mask
         raw_signal[mask] = np.interp(indices[mask], indices[good], raw_signal[good])
 
+    # ✅ ADD: match the jump clipping from the main loop
+    diffs = np.diff(raw_signal, prepend=raw_signal[0])
+    jump_threshold = 3 * np.std(diffs)
+    jump_mask = np.abs(diffs) > jump_threshold
+    if jump_mask.any():
+        indices = np.arange(len(raw_signal))
+        good = ~jump_mask
+        raw_signal[jump_mask] = np.interp(indices[jump_mask], indices[good], raw_signal[good])
+
+    # ✅ ADD: match the detrend from the main loop
+    raw_signal = detrend(raw_signal, type='linear')
 
 
-
-    time_axis = np.arange(len(raw_signal)) / FS + trim_sec  # seconds
+    time_axis = time_sec[trim_idx:]  # np.arange(len(raw_signal)) / FS + trim_sec  # seconds
 
     fig, axes = plt.subplots(3, 1, figsize=(14, 8), sharex=True)
     fig.suptitle(f"{REC_ID} — {cell_name}", fontsize=14)
@@ -195,7 +233,7 @@ else:
     # 1. Raw signal (after zero fill)
     axes[0].plot(time_axis, raw_signal, linewidth=0.6)
     axes[0].set_ylabel("Depth (mm)")
-    axes[0].set_title("Raw signal interpolated")
+    axes[0].set_title("Raw signal interpolated + jump clipped + detrended")
 
     # 2. Filtered signal
     filt_signal = filtered_df[cell_name].values
@@ -205,7 +243,7 @@ else:
 
     # 3. Overlay: raw detrended vs filtered (to see what the filter kept)
     detrended = raw_signal - np.mean(raw_signal)
-    axes[2].plot(time_axis, detrended, linewidth=0.5, alpha=0.5, label="Raw (interpolated)")
+    axes[2].plot(time_axis, detrended, linewidth=0.5, alpha=0.5, label="Raw (preprocessed and mean-removed)")
     axes[2].plot(time_axis, filt_signal, linewidth=0.7, label="Filtered")
     axes[2].set_ylabel("Amplitude")
     axes[2].set_xlabel("Time (s)")
