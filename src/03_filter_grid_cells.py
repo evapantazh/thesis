@@ -8,6 +8,7 @@ from scipy.signal import detrend
 
 # ADD DETRENDING LATER??????
 # KEEP IT FOR NOW AS IS
+# ADDED
 
 
 # --- 1. SETTINGS & PATHS ---
@@ -19,9 +20,9 @@ if BATCH_MODE:
     REC_ID = sys.argv[1]
 else:
     # Default for manual runs
-    SUBJECT = "AVE"
+    SUBJECT = "GAX"
     DIST = "800"
-    CLOTH = "hoodie"
+    CLOTH = "tshirt"
     REC_ID = f"{SUBJECT}_{DIST}_{CLOTH}"
 
 GRID_DIR   = Path(r"C:\Projects\thesis\data\GRID_files")
@@ -212,7 +213,7 @@ else:
         good = ~mask
         raw_signal[mask] = np.interp(indices[mask], indices[good], raw_signal[good])
 
-    # ✅ ADD: match the jump clipping from the main loop
+    # ADD: match the jump clipping from the main loop
     diffs = np.diff(raw_signal, prepend=raw_signal[0])
     jump_threshold = 3 * np.std(diffs)
     jump_mask = np.abs(diffs) > jump_threshold
@@ -221,7 +222,7 @@ else:
         good = ~jump_mask
         raw_signal[jump_mask] = np.interp(indices[jump_mask], indices[good], raw_signal[good])
 
-    # ✅ ADD: match the detrend from the main loop
+    # ADD: match the detrend from the main loop
     raw_signal = detrend(raw_signal, type='linear')
 
 
@@ -254,7 +255,7 @@ else:
 
     PLOT_DIR = OUTPUT_DIR / "plots"
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    plot_path = PLOT_DIR / f"filter_check_{REC_ID}_{cell_name}.png"
+    plot_path = PLOT_DIR / f"filter_check_detrended_{REC_ID}_{cell_name}.png"
     plt.savefig(plot_path, dpi=150)
     if not BATCH_MODE:
         plt.show()
