@@ -25,7 +25,7 @@ OUTPUT_LOW_RANK = OUTPUT_DIR / f"LOWRANK_{REC_ID}.csv"
 OUTPUT_SPARSE = OUTPUT_DIR / f"SPARSE_{REC_ID}.csv"
 
 # RPCA parameter from paper (Section C)
-GAMMA = 0.02
+GAMMA = 0.03
 # Alternative: default from IALM paper = 1/sqrt(m), computed after loading data
 #GAMMA = 1 / np.sqrt(num_frames)  # uncomment and move after data loading
 #GAMMA = 1 / np.sqrt(1101)  # ≈ 0.0301
