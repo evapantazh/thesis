@@ -56,8 +56,8 @@ PATH_CAMERA_GRID   = BASE / "GRID_files" / f"GRID_{REC_ID}.csv"
 PATH_MOVESENSE     = BASE / "movesense" / REC_ID
 PATH_MOVESENSE_ACC = PATH_MOVESENSE / "acc_stream.json"
 
-PATH_OUTPUT_JSON   = BASE / "tap_info" / f"Tap_info_{REC_ID}.json"
-PATH_OUTPUT_PLOT   = BASE / "tap_info" / f"tap_sync_{REC_ID}.png"
+PATH_OUTPUT_JSON   = BASE / "tap_info" / "json"/ f"Tap_info_{REC_ID}.json"
+PATH_OUTPUT_PLOT   = BASE / "tap_info" / "plots_debug"/ f"tap_sync_{REC_ID}.png"
 
 # ─────────────────────────────────────────────────────────────
 #  CONFIG
@@ -506,7 +506,7 @@ def save_thesis_figure(t_cam, stern_smooth, t_ms, ms_proxy_smooth,
     Only shows the sternum proxy and Movesense — the two cleanest signals.
     No debug info, no algorithm markers cluttering the plot.
     """
-    PATH_THESIS = PATH_OUTPUT_PLOT.parent / f"thesis_sync_{REC_ID}.png"
+    PATH_THESIS = BASE/ "tap_info"/ "plots_thesis"/ f"thesis_sync_{REC_ID}.png"
  
     def norm(x):
         return (x - np.mean(x)) / (np.std(x) + 1e-12)

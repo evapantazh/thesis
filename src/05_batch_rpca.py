@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 FILTERED_DIR   = Path(r"C:\Projects\thesis\data\FILTERED_files")
-RPCA_SCRIPT    = Path(r"C:\Projects\thesis\src\rpca_minimization.py")
+RPCA_SCRIPT    = Path(r"C:\Projects\thesis\src\05_rpca.py")
 OUTPUT_DIR     = Path(r"C:\Projects\thesis\data\RPCA_files")
 
 # Find all FILTERED CSVs
