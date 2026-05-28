@@ -24,8 +24,8 @@ else:
 
     BASE     = Path(r"D:\recordings")
     SUBJECT  = "AVE"
-    DIST     = "1800"                             # 800, 1200, 1800
-    CLOTH    = "hoodie"                           # Tshirt, Hoodie
+    DIST     = "800"                             # 800, 1200, 1800
+    CLOTH    = "tshirt"                           # Tshirt, Hoodie
     REC_ID   = f"{SUBJECT}_{DIST}_{CLOTH}"
     REC_DIR   = BASE / REC_ID
 
@@ -45,7 +45,7 @@ MIN_ROI_W = 40   # pixels
 MIN_ROI_H = 40   # pixels
 MIN_VALID_PIXELS_PER_CELL = 10  # if less, treat as 0
 
-DEBUG_VIZ = False # True to show the visual overlay
+DEBUG_VIZ = True # True to show the visual overlay
 
 
 # Load depth scale from metadata if available 
