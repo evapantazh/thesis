@@ -229,7 +229,7 @@ def load_timestamps(rec_id, show_stats=False,
 
    
 
-    return None
+    return df
 
 
 def load_fps(rec_id, default = 15.0):
@@ -246,15 +246,67 @@ def load_fps(rec_id, default = 15.0):
 
 
 
-'''
-def load_metadata(rec_id):
-    pass 
-def load_fps(rec_id):
-    pass
+def list_recordings(verify_files=True):
+    """
+    List all available recording IDs in the dataset.
 
+    Scans the GRID_files directory for files matching GRID_*.csv and
+    extracts the recording ID. Optionally verifies that the required
+    companion files exist for each recording.
 
-'''
+    Parameters
+    ----------
+    verify_files : bool, default True
+        If True, only return recordings that have ALL required files:
+        - GRID_files/GRID_{rec_id}.csv
+        - tap_info/json/Tap_info_{rec_id}.json
+        - movesense/{rec_id}/heartRate_stream.json
+        - timestamps in primary or backup location
 
+    Returns
+    -------
+    list of str
+        Recording IDs (e.g., ["AGE_800_tshirt", "AVE_1200_hoodie", ...]),
+        sorted alphabetically.
+    """
+    if not GRID_DIR.exists():
+        print(f"⚠️ Grid directory not found: {GRID_DIR}")
+        return []
+
+    grid_files = sorted(GRID_DIR.glob("GRID_*.csv"))
+    candidates = [p.stem.replace("GRID_", "") for p in grid_files]
+
+    if not verify_files:
+        return candidates
+
+    valid = []
+    skipped = []
+    for rec_id in candidates:
+        # Check required companions
+        tap_path = TAP_DIR / f"Tap_info_{rec_id}.json"
+        ms_path = MOVESENSE_DIR / rec_id / "heartRate_stream.json"
+        ts_primary = TIMESTAMPS_BASE / rec_id / "timestamps.csv"
+        ts_backup = TIMESTAMPS_BACKUP / rec_id / "timestamps.csv"
+
+        missing = []
+        if not tap_path.exists():
+            missing.append("tap")
+        if not ms_path.exists():
+            missing.append("hr")
+        if not (ts_primary.exists() or ts_backup.exists()):
+            missing.append("ts")
+
+        if missing:
+            skipped.append((rec_id, missing))
+        else:
+            valid.append(rec_id)
+
+    if skipped:
+        print(f"⚠️ Skipped {len(skipped)} recording(s) with missing files:")
+        for rec_id, missing in skipped:
+            print(f"   {rec_id}: missing {', '.join(missing)}")
+
+    return valid
 
 
 
