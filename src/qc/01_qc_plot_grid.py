@@ -1,9 +1,17 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 
 # Load grid data
-OUTPUT_CSV = r"C:\Projects\thesis\data\csv\chrys_500_tshirt_GRID.csv"
+OUTPUT_CSV = r"C:\Projects\thesis\data\GRID_files\GRID_AGE_1200_tshirt.csv"
+if not os.path.exists(OUTPUT_CSV):
+    print(f"FAILED: The file was not found at {OUTPUT_CSV}")
+    # Εδώ μπορείς να βάλεις μια εντολή για να δεις τι αρχεία υπάρχουν όντως εκεί
+    print("Files in this directory:", os.listdir(os.path.dirname(OUTPUT_CSV)))
+else:
+    df = pd.read_csv(OUTPUT_CSV)
+    print("Success! File loaded.")
 
 df = pd.read_csv(OUTPUT_CSV)
 
