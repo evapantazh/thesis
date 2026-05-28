@@ -8,7 +8,8 @@ from scipy.signal import detrend
 
 # ADD DETRENDING LATER??????
 # KEEP IT FOR NOW AS IS
-# ADDED
+# ADDED LINEAR 
+# CHECK FOR ANOTHER TYPE IF IT DOENST WORK
 
 
 # --- 1. SETTINGS & PATHS ---
@@ -30,7 +31,7 @@ OUTPUT_DIR = Path(r"C:\Projects\thesis\data\FILTERED_files")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 INPUT_PATH  = GRID_DIR   / f"GRID_{REC_ID}.csv"
-OUTPUT_PATH = OUTPUT_DIR / f"FILTERED_DETRENDED_{REC_ID}.csv"
+OUTPUT_PATH = OUTPUT_DIR / f"FILTERED_{REC_ID}.csv"
 
 METADATA_PATH = Path(r"C:\Projects\thesis\data\metadata")
 
@@ -97,7 +98,10 @@ else:
     # We don't just assume every frame is exactly 1/15 seconds apart. There might be a frame drop for example. So
 
     # new — real timestamps
-    ts_df_filter = pd.read_csv(Path(r"D:\recordings") / REC_ID / "timestamps.csv").set_index("frame")
+    ts_path = Path(r"D:\recordings") / REC_ID / "timestamps.csv"
+    if not ts_path.exists():
+        ts_path = Path(r"C:\Projects\thesis\data\timestamps_backup") / REC_ID / "timestamps.csv"
+    ts_df_filter = pd.read_csv(ts_path).set_index("frame")
     depth_col = "depth_timestamp" if "depth_timestamp" in ts_df_filter.columns else "timestamp"
     grid_frames = df["frame"].values
     timestamps = ts_df_filter.loc[grid_frames, depth_col].values
@@ -255,7 +259,7 @@ else:
 
     PLOT_DIR = OUTPUT_DIR / "plots"
     PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    plot_path = PLOT_DIR / f"filter_check_detrended_{REC_ID}_{cell_name}.png"
+    plot_path = PLOT_DIR / f"filter_check_{REC_ID}_{cell_name}.png"
     plt.savefig(plot_path, dpi=150)
     if not BATCH_MODE:
         plt.show()
