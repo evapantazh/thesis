@@ -4,7 +4,7 @@ import numpy as np
 import os
 
 # Load grid data
-OUTPUT_CSV = r"C:\Projects\thesis\data\GRID_files\GRID_AGE_1200_tshirt.csv"
+OUTPUT_CSV = r"C:\Projects\thesis\data\GRID_files\GRID_AVE_1200_tshirt.csv"
 if not os.path.exists(OUTPUT_CSV):
     print(f"FAILED: The file was not found at {OUTPUT_CSV}")
     # Εδώ μπορείς να βάλεις μια εντολή για να δεις τι αρχεία υπάρχουν όντως εκεί
