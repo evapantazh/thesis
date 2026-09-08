@@ -91,7 +91,7 @@ def main():
     # Initialize the pipeline and configuration objects
     pipeline = Pipeline()
     config = Config()
-
+    
     try:
         # 1. Setup Color Stream Profile
         profile_list = pipeline.get_stream_profile_list(OBSensorType.COLOR_SENSOR)
