@@ -32,8 +32,8 @@ import numpy as np
 # ============================================================
 
 FILTERED_DIR = Path(r"C:\Projects\thesis\data\FILTERED_files")
-PULSE_DIR    = Path(r"C:\Projects\thesis\data\PULSE_files")
-EIGENVECTOR_SCRIPT = Path(__file__).parent / "06_eigenvectors.py"
+PULSE_DIR    = Path(r"C:\Projects\thesis\data\PULSE_files_SQI")
+EIGENVECTOR_SCRIPT = Path(__file__).parent / "TEST_06_eigenvectors_SQI.py"
 
 SUMMARY_DIR = PULSE_DIR / "summaries"
 SUMMARY_DIR.mkdir(parents=True, exist_ok=True)
@@ -347,16 +347,111 @@ def main():
     print()
     summary_text = print_summary(results)
     print(summary_text)
+    print(category_breakdown(results))
+
+
 
     # ─── Save summary text + CSV ─────────────────────────────
     stamp = time.strftime("%Y%m%d_%H%M%S")
     summary_path = SUMMARY_DIR / f"summary_{stamp}.txt"
     with open(summary_path, 'w', encoding='utf-8') as f:
         f.write(summary_text)
+        f.write("\n\n")
+        f.write(category_breakdown(results))
     print(f"\nSummary text saved: {summary_path}")
 
     csv_path = SUMMARY_DIR / f"summary_{stamp}.csv"
     export_csv(results, csv_path)
+
+# ============================================================
+# ADD THIS to 07_batch.py
+# ============================================================
+#
+# 1. Paste the function below at the BOTTOM of 07_batch.py
+#    (before the `if __name__ == "__main__":` line).
+#
+# 2. Inside main(), AFTER the existing line:
+#        print(summary_text)
+#    add ONE new line:
+#        print(category_breakdown(results))
+#
+# 3. AFTER the existing line:
+#        with open(summary_path, 'w', encoding='utf-8') as f:
+#            f.write(summary_text)
+#    change it to also write the category breakdown:
+#        with open(summary_path, 'w', encoding='utf-8') as f:
+#            f.write(summary_text)
+#            f.write("\n\n")
+#            f.write(category_breakdown(results))
+#
+# Nothing else changes. Run the batch normally.
+# ============================================================
+
+
+def category_breakdown(results):
+    """
+    Group results by (dist, cloth), by dist alone, and by cloth alone.
+    Returns a printable text block with mean error and counts per category.
+
+    rec_id format: SUBJECT_DIST_CLOTH  (e.g. AGA_1200_tshirt)
+    """
+    # Collect (dist, cloth, err) tuples, skipping failures
+    rows = []
+    for rec_id, r in results.items():
+        if r is None:
+            continue
+        gt = r.get('gt_bpm')
+        bpm = r.get('bpm_smoothed')
+        if gt is None or bpm is None:
+            continue
+        parts = rec_id.split('_')
+        if len(parts) < 3:
+            continue
+        dist = parts[1]
+        cloth = parts[2]
+        err = abs(bpm - gt)
+        rows.append((dist, cloth, err))
+
+    if not rows:
+        return "\n(no data for category breakdown)\n"
+
+    def _fmt(label, errs):
+        arr = np.array(errs)
+        lt5 = int((arr < 5).sum())
+        lt10 = int((arr < 10).sum())
+        return (f"  {label:<22} n={len(arr):>3}  "
+                f"mean={arr.mean():5.2f}  median={np.median(arr):5.2f}  "
+                f"<5BPM={lt5:>2}/{len(arr)}  <10BPM={lt10:>2}/{len(arr)}")
+
+    lines = []
+    sep = "=" * 80
+    lines.append("")
+    lines.append(sep)
+    lines.append("BREAKDOWN BY CATEGORY")
+    lines.append(sep)
+
+    # ── 1. By distance × cloth (every pair) ──────────────────
+    lines.append("\nBy distance × cloth:")
+    pair_keys = sorted({(d, c) for d, c, _ in rows})
+    for dist, cloth in pair_keys:
+        errs = [e for d, c, e in rows if d == dist and c == cloth]
+        lines.append(_fmt(f"{dist} / {cloth}", errs))
+
+    # ── 2. By distance alone ─────────────────────────────────
+    lines.append("\nBy distance (all cloths):")
+    for dist in sorted({d for d, _, _ in rows}):
+        errs = [e for d, _, e in rows if d == dist]
+        lines.append(_fmt(f"dist={dist}", errs))
+
+    # ── 3. By cloth alone ────────────────────────────────────
+    lines.append("\nBy cloth (all distances):")
+    for cloth in sorted({c for _, c, _ in rows}):
+        errs = [e for _, c2, e in rows if c2 == cloth]
+        lines.append(_fmt(f"cloth={cloth}", errs))
+
+    lines.append(sep)
+    return "\n".join(lines)
+
 
 
 if __name__ == "__main__":
