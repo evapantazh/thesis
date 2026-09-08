@@ -33,10 +33,17 @@ from scipy.ndimage import gaussian_filter1d
 import json
 from pathlib import Path
 
+plt.rcParams.update({
+    "text.usetex": False,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+    "mathtext.fontset": "cm",
+    "axes.formatter.use_mathtext": True,
+})
 # ─────────────────────────────────────────────────────────────
 #  RECORDING  — edit these
 # ─────────────────────────────────────────────────────────────
-SUBJECT = "GAX"
+SUBJECT = "IMA"
 DIST    = "800"
 CLOTH   = "tshirt"
 
