@@ -16,3 +16,4 @@ myenv/
 # Προσωρινά αρχεία Python
 __pycache__/
 *.pyc
+.tmp.driveupload/110726
